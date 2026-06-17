@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { runClaude } from "../claude.js";
 import { prepareAttachments } from "../attachments.js";
 import { log } from "../log.js";
-import { trim } from "./shared.js";
+import { detectLang, trim } from "./shared.js";
 
 function answerPrompt({ mention, contextBlock }, attachmentsBlock) {
   return `A teammate mentioned me on Slack with a question. Draft a reply I can send them.
@@ -14,7 +14,7 @@ ${mention.text}
 """
 ${contextBlock}${attachmentsBlock}
 You are in the workspace root containing the team's repositories — consult their code and docs if the question is about this platform.
-Write ONLY the reply text, in the same language as the question, concise and Slack-friendly (no markdown headers).
+Write ONLY the reply text in ${detectLang(mention.text) === "vi" ? "Vietnamese" : "English"} (match the language of the Slack message above, not the context), concise and Slack-friendly (no markdown headers).
 If you cannot answer confidently, say what you'd need to find out instead of guessing.`;
 }
 

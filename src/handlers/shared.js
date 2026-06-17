@@ -7,6 +7,10 @@ const SLACK_TEXT_LIMIT = 3500;
 const STOP_REPLY = /^(stop|cancel|skip|huỷ|hủy|dừng|thôi)\b/i;
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const VI_RE = /[ơưăđ]|[Ẁ-ỿ]/i;
+/** Returns "vi" or "en" based on mention.text only — ignores context block. */
+export const detectLang = (text = "") => (VI_RE.test(text) ? "vi" : "en");
 export const minutes = (ms) => Math.round(ms / 60_000);
 export const trim = (text) =>
   text.length > SLACK_TEXT_LIMIT ? `${text.slice(0, SLACK_TEXT_LIMIT)}\n… (truncated)` : text;

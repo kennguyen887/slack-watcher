@@ -5,7 +5,7 @@ import { createWorktree, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { parsePrUrl } from "../github.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, minutes, threadTsOf, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, detectLang, minutes, threadTsOf, trim, watchForStop } from "./shared.js";
 
 function reviewPrompt({ mention, contextBlock }, pr, attachmentsBlock) {
   return `A teammate asked me to review a pull request. Review it and post inline comments under MY GitHub account.
@@ -33,7 +33,7 @@ Workflow:
 
 End your final message with exactly these lines:
 REVIEW_COMMENTS: <number of inline comments you posted, 0 if none>
-SLACK_REPLY: <one short sentence in the requester's language: if comments were posted, say you added review comments on the PR; if zero, say the PR looks good to you>`;
+SLACK_REPLY: <one short sentence in ${detectLang(mention.text) === "vi" ? "Vietnamese" : "English"} (match the language of the Slack message above, ignore the context block): if comments were posted, say you added review comments on the PR; if zero, say the PR looks good to you>`;
 }
 
 export async function handlePrReview(ctx) {
