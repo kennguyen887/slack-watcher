@@ -1,0 +1,143 @@
+import path from "node:path";
+import fs from "node:fs";
+import { runClaude, CancelledError } from "../claude.js";
+import { createWorktree, removeWorktree } from "../git.js";
+import { log } from "../log.js";
+import { minutes, trim, watchForStop } from "./shared.js";
+
+const HEARTBEAT_MS = 5 * 60_000;
+
+/** Map an alerter service name to a repo folder under REPOS_ROOT. */
+export function repoForService(service, serviceRepos = {}) {
+  if (serviceRepos[service]) return serviceRepos[service];
+  // "listings-api (rc scheduler)" / "legacy-api (rc)" → base service name.
+  return String(service || "").replace(/\s*\(.*\)\s*$/, "").trim();
+}
+
+function fixPrompt(event, branchName, base, draft) {
+  const prCmd = `gh pr create --base ${base}${draft ? " --draft" : ""}`;
+  return `A production error was detected in CloudWatch and needs a code fix. Investigate the ROOT CAUSE and open a pull request.
+
+CloudWatch error:
+"""
+${event.sample}
+"""
+• Service: ${event.service}
+• Log group: ${event.group} (${event.region})
+• Pattern matched: ${event.pattern} (severity ${event.severity})
+• Occurrences in the alert window: ${event.count}
+• CloudWatch logs: ${event.consoleUrl}
+
+Mandatory workflow for this repository:
+1. You are already in an ISOLATED git worktree checked out at the latest \`origin/${base}\` (detached). The user's main working copy lives elsewhere — never cd into it or touch it. Branch from here.
+2. Create a branch named \`${branchName}\`.
+3. DUPLICATE-WORK CHECK before writing any code:
+   - Run \`gh pr list --state all --limit 20\` and \`git log origin/${base} --oneline -20\`; search for this error, the files involved, and keywords from the message.
+   - If existing work already fixes this error (open/merged PR, recent commit), STOP, make no changes, and put that PR/commit link in SLACK_DRAFT.
+4. Find the ROOT CAUSE of THIS error — trace from the log message/stack to the offending code. Do NOT ship a symptom patch (a blind try/catch or guard) unless that is genuinely the correct fix.
+5. IMPORTANT — bail out cleanly if this is NOT a fixable code bug. Many alerts are integration outages (HubSpot/CustomerIO/DTN down), config/credential problems, transient network errors, or data issues with no code fix, and some can't be located from the message alone. In any of those cases: STOP, make NO changes, open NO PR, and explain in SLACK_DRAFT what the error is and why it isn't auto-fixable (e.g. "upstream HubSpot 5xx — no code change"). A wrong PR is worse than none.
+6. If you do fix it: implement the smallest correct change, follow existing code style and the repo's own rules (CLAUDE.md / CONTRIBUTING.md if present).
+7. Run the project's tests and lint; fix failures you introduced. A fresh worktree has no node_modules — install dependencies first (pnpm/npm per the repo's lockfile).
+8. Commit with a plain message describing the fix. NEVER add AI attribution (no Co-Authored-By, no "Generated with" lines).
+9. Push the branch and open the pull request targeting \`${base}\`: \`${prCmd}\`. The PR body must describe the error, the root cause, the fix, how you verified it, and anything left unverified.
+
+End your final message with exactly these lines:
+PR_URL: <the pull request URL, or "none" if you opened no PR>
+SLACK_DRAFT: <a short status line for me (English) — the fix summary, or why this wasn't auto-fixable>`;
+}
+
+/**
+ * Handle one CloudWatch error event: isolated worktree → claude fix worker → PR → self-DM.
+ * @param {{ event: object, config: object, slack: object, selfId: string }} ctx
+ */
+export async function handleCwalertFix({ event, config, slack, selfId }) {
+  const cfg = config.cwalert;
+  const repo = repoForService(event.service, cfg.serviceRepos);
+  const repoPath = repo ? path.join(config.reposRoot, repo) : null;
+
+  if (!repoPath || !fs.existsSync(repoPath)) {
+    await slack.postToSelf(
+      selfId,
+      `:warning: *CloudWatch error* in *${event.service}* — couldn't map it to a repo (\`${repo || "?"}\`). No auto-fix.\n> ${trim(event.sample)}\nLogs: ${event.consoleUrl}`,
+    );
+    return { status: "needs_repo", repo };
+  }
+
+  const branchName = `auto/cwalert-${String(event.ts)}`;
+  const dmChannel = await slack.postToSelf(
+    selfId,
+    `:rotating_light: *Auto-fix picked up a CloudWatch error*\n` +
+      `> ${trim(event.sample)}\n` +
+      `• Service: *${event.service}* → repo *${repo}* (branch \`${branchName}\`, isolated worktree)\n` +
+      `• Base: fresh \`origin/${cfg.baseBranch}\` — your working copy is untouched\n` +
+      `• Reply \`stop\` here to cancel while it runs. Timeout ${minutes(config.workerTimeoutMs)} min — I'll DM the result (PR or reason).\n` +
+      `Logs: ${event.consoleUrl}`,
+  );
+
+  let worktreePath;
+  try {
+    worktreePath = createWorktree(repoPath, repo, String(event.ts), config.worktreesDir, cfg.baseBranch);
+    log(`[cwalert:${repo}] worktree ready: ${worktreePath}`);
+  } catch (err) {
+    await slack.postToSelf(
+      selfId,
+      `:x: Could not prepare a worktree for *${repo}* (${err.message}). Handle this CloudWatch error manually.\nLogs: ${event.consoleUrl}`,
+    );
+    return { status: "worktree_failed", error: err.message };
+  }
+
+  const startedAt = Date.now();
+  const heartbeat = setInterval(
+    () => log(`[cwalert:${repo}] worker still running (${minutes(Date.now() - startedAt)} min elapsed)`),
+    HEARTBEAT_MS,
+  );
+  const controller = new AbortController();
+  const stopWatching = watchForStop({ slack }, dmChannel, `cwalert:${repo}`, controller);
+
+  let result;
+  try {
+    result = await runClaude({
+      bin: config.claudeBin,
+      prompt: fixPrompt(event, branchName, cfg.baseBranch, cfg.draft),
+      cwd: worktreePath,
+      timeoutMs: config.workerTimeoutMs,
+      extraArgs: config.workerClaudeArgs,
+      model: config.workerModel,
+      label: `cwalert:${repo}`,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof CancelledError) {
+      await slack.postToSelf(
+        selfId,
+        `:no_entry: *Stopped* the auto-fix worker for *${repo}* after ${minutes(Date.now() - startedAt)} min. Worktree discarded; if a branch/PR was pushed, close it manually.`,
+      );
+      return { status: "cancelled_mid_task" };
+    }
+    throw err;
+  } finally {
+    stopWatching();
+    clearInterval(heartbeat);
+    removeWorktree(repoPath, worktreePath);
+  }
+
+  const elapsedMin = minutes(Date.now() - startedAt);
+  const prUrl = result.match(/^PR_URL:\s*(\S+)/m)?.[1] ?? "none";
+  const slackDraft = result.match(/SLACK_DRAFT:\s*([\s\S]+)$/m)?.[1]?.trim() ?? "";
+  log(`[cwalert:${repo}] result: ${prUrl !== "none" ? `PR ${prUrl}` : "no PR"}`);
+
+  const header =
+    prUrl !== "none"
+      ? `:white_check_mark: *Auto-fix PR opened* for *${repo}* in ${elapsedMin} min: ${prUrl}`
+      : `:information_source: *No auto-fix PR* for the CloudWatch error in *${repo}* (${elapsedMin} min) — likely not a code bug (see below):`;
+
+  await slack.postToSelf(
+    selfId,
+    trim(
+      `${header}\n> ${event.sample}\nLogs: ${event.consoleUrl}` +
+        (slackDraft ? `\n\n${slackDraft}` : "") +
+        (prUrl === "none" ? `\n\nWorker output:\n${result}` : ""),
+    ),
+  );
+  return { status: prUrl !== "none" ? "pr_opened" : "no_pr", prUrl };
+}

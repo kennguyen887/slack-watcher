@@ -6,6 +6,7 @@ import { loadState, saveState, mentionKey, appendHistory } from "./state.js";
 import { classifyMention } from "./classify.js";
 import { PR_URL_RE } from "./github.js";
 import { HANDLERS } from "./handlers/index.js";
+import { pollCwalert } from "./sources/cwalert.js";
 import { log, stamp } from "./log.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -137,12 +138,24 @@ async function main() {
   process.on("SIGTERM", () => (stopping = true));
   process.on("SIGINT", () => (stopping = true));
 
+  if (config.cwalert.enabled) {
+    log(`cwalert source ON — event log ${config.cwalert.eventLog}, base ${config.cwalert.baseBranch}, cooldown ${Math.round(config.cwalert.cooldownMs / 3_600_000)}h`);
+  }
+
   do {
     try {
       await pollOnce(config, slack, userId, query, state);
     } catch (err) {
       const cause = err.cause ? ` (${err.cause.code ?? err.cause.message ?? err.cause})` : "";
       log(`poll error: ${err.message}${cause}`);
+    }
+    // CloudWatch auto-fix source — isolated try/catch so a failure never stalls mention polling.
+    if (config.cwalert.enabled) {
+      try {
+        await pollCwalert(config, slack, userId);
+      } catch (err) {
+        log(`cwalert poll error: ${err.message}`);
+      }
     }
     if (!once) await sleep(config.pollIntervalSeconds * 1000);
   } while (!once && !stopping);

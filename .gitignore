@@ -1,5 +1,7 @@
 .env
 state.json
+cwalert-state.json
+events/
 history.jsonl
 logs/
 worktrees/

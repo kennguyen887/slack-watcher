@@ -20,6 +20,16 @@ function parseEnvFile(filePath) {
     }, {});
 }
 
+function parseJsonEnv(raw) {
+  if (!raw) return {};
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? v : {};
+  } catch {
+    return {};
+  }
+}
+
 function intOption(raw, fallback, { min } = {}) {
   const value = raw === undefined || raw === "" ? fallback : Number.parseInt(raw, 10);
   if (!Number.isInteger(value)) return fallback;
@@ -51,6 +61,19 @@ export function loadConfig() {
     reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 30, { min: 1 }) * 60_000,
     answerTimeoutMs: intOption(env.ANSWER_TIMEOUT_MINUTES, 10, { min: 1 }) * 60_000,
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
+    // ── CloudWatch error → auto-fix source (off unless CWALERT_ENABLED) ──
+    cwalert: {
+      enabled: env.CWALERT_ENABLED === "1" || env.CWALERT_ENABLED === "true",
+      eventLog: env.CWALERT_EVENT_LOG || path.join(BASE_DIR, "events", "cwalert.jsonl"),
+      baseBranch: env.CWALERT_BASE_BRANCH || env.BASE_BRANCH || "main",
+      draft: env.CWALERT_DRAFT === "1" || env.CWALERT_DRAFT === "true",
+      cooldownMs: intOption(env.CWALERT_COOLDOWN_HOURS, 12, { min: 0 }) * 3_600_000,
+      maxPerPoll: intOption(env.CWALERT_MAX_PER_POLL, 2, { min: 1 }),
+      // service (from the alerter) → repo folder under REPOS_ROOT. Fallback strips a
+      // trailing " (...)" suffix, e.g. "listings-api (rc scheduler)" → "listings-api".
+      serviceRepos: parseJsonEnv(env.CWALERT_SERVICE_REPOS),
+      stateFile: path.join(BASE_DIR, "cwalert-state.json"),
+    },
     worktreesDir: path.join(BASE_DIR, "worktrees"),
     attachmentsDir: path.join(BASE_DIR, "attachments"),
     stateFile: path.join(BASE_DIR, "state.json"),
