@@ -1,5 +1,6 @@
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
+import { log } from "./log.js";
 
 export function git(repoPath, ...args) {
   try {
@@ -19,8 +20,26 @@ export function git(repoPath, ...args) {
  */
 export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch) {
   const worktreePath = path.join(worktreesDir, `${repoName}-${ts.replace(".", "-")}`);
-  git(repoPath, "fetch", "origin", baseBranch);
+  // Pull the latest for ALL branches (+prune deleted remotes) so the fix always starts from
+  // the CURRENT tip of the base branch (RC/master). We check the worktree out DETACHED at
+  // origin/<base> — never a local branch — so a stale local RC/master can't leak in.
+  git(repoPath, "fetch", "--all", "--prune");
+  let tip;
+  try {
+    tip = git(repoPath, "rev-parse", "--short", `origin/${baseBranch}`);
+  } catch {
+    throw new Error(
+      `base branch origin/${baseBranch} not found in ${repoName} after fetch — check BASE_BRANCH / the repo's default branch`,
+    );
+  }
   git(repoPath, "worktree", "add", "--detach", worktreePath, `origin/${baseBranch}`);
+  let subject = "";
+  try {
+    subject = git(repoPath, "log", "-1", "--format=%s", `origin/${baseBranch}`);
+  } catch {
+    // best-effort log detail only
+  }
+  log(`[${repoName}] worktree at latest origin/${baseBranch} @ ${tip}${subject ? ` — ${subject.slice(0, 72)}` : ""}`);
   return worktreePath;
 }
 
