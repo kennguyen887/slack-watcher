@@ -32,9 +32,13 @@ export function saveCwalertState(stateFile, state) {
  * @returns {{ lines: string[], offset: number, baselined: boolean }}
  */
 export function readNewEvents(eventLog, state) {
-  if (!fs.existsSync(eventLog)) return { lines: [], offset: state.offset, baselined: false };
-  const size = fs.statSync(eventLog).size;
-  if (!state.initialized) return { lines: [], offset: size, baselined: true }; // skip backlog on first run
+  const exists = fs.existsSync(eventLog);
+  const size = exists ? fs.statSync(eventLog).size : 0;
+  // First run baselines at ENABLE time: a pre-existing backlog (log already had content) is
+  // skipped, but a log that doesn't exist yet baselines at 0 — so the FIRST events written
+  // after we're enabled are caught, not mistaken for backlog and dropped.
+  if (!state.initialized) return { lines: [], offset: size, baselined: true };
+  if (!exists) return { lines: [], offset: 0, baselined: false }; // log rotated/removed since
   let from = state.offset;
   if (size < from) from = 0; // file was rotated/truncated
   if (size === from) return { lines: [], offset: size, baselined: false };

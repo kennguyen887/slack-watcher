@@ -55,10 +55,13 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
   const repo = repoForService(event.service, cfg.serviceRepos);
   const repoPath = repo ? path.join(config.reposRoot, repo) : null;
 
-  if (!repoPath || !fs.existsSync(repoPath)) {
+  // Require an actual git checkout under REPOS_ROOT — a bare folder (e.g. a service that was
+  // never cloned) would only fail later at `git fetch`. existsSync covers both a .git dir and
+  // a .git file (worktrees/submodules), matching listRepos().
+  if (!repoPath || !fs.existsSync(path.join(repoPath, ".git"))) {
     await slack.postToSelf(
       selfId,
-      `:warning: *CloudWatch error* in *${event.service}* — couldn't map it to a repo (\`${repo || "?"}\`). No auto-fix.\n> ${trim(event.sample)}\nLogs: ${event.consoleUrl}`,
+      `:warning: *CloudWatch error* in *${event.service}* — no git checkout for repo \`${repo || "?"}\` under REPOS_ROOT, can't auto-fix. Clone it there or map it via CWALERT_SERVICE_REPOS.\n> ${trim(event.sample)}\nLogs: ${event.consoleUrl}`,
     );
     return { status: "needs_repo", repo };
   }

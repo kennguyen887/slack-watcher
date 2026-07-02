@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { selectEvents, readNewEvents, loadCwalertState, saveCwalertState } from "../src/sources/cwalert.js";
-import { repoForService } from "../src/handlers/cwalert-fix.js";
+import { repoForService, handleCwalertFix } from "../src/handlers/cwalert-fix.js";
 
 const HOUR = 3_600_000;
 const ev = (over = {}) => ({ v: 1, ts: 1000, key: "k1", severity: "error", service: "listings-api", sample: "boom", lastTs: 1000, ...over });
@@ -74,12 +74,40 @@ test("readNewEvents returns only bytes appended since the stored offset", () => 
   assert.equal(JSON.parse(r.lines[0]).key, "b");
 });
 
+test("readNewEvents baselines at 0 when the log does not exist yet, so the FIRST batch is caught", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-"));
+  const f = path.join(dir, "e.jsonl"); // not created yet
+  const first = readNewEvents(f, { initialized: false, offset: 0, attempts: {} });
+  assert.equal(first.baselined, true);
+  assert.equal(first.offset, 0); // baseline at enable time, not at first-sighting-of-content
+
+  // Alerter later creates the log with the first real events.
+  fs.writeFileSync(f, line({ key: "a" }) + "\n" + line({ key: "b" }) + "\n");
+  const next = readNewEvents(f, { initialized: true, offset: 0, attempts: {} });
+  assert.equal(next.lines.length, 2); // both first-batch events are read, not skipped
+});
+
 test("readNewEvents resets the offset when the file is truncated/rotated", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-"));
   const f = path.join(dir, "e.jsonl");
   fs.writeFileSync(f, line({ key: "a" }) + "\n");
   const r = readNewEvents(f, { initialized: true, offset: 999_999, attempts: {} });
   assert.equal(r.lines.length, 1); // read from 0, not the stale huge offset
+});
+
+test("handleCwalertFix bails out (no worktree) when the target repo isn't a git checkout", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cw-"));
+  fs.mkdirSync(path.join(dir, "legacy-api")); // folder exists but has no .git
+  const dms = [];
+  const slack = { postToSelf: async (_, t) => { dms.push(t); return "D1"; } };
+  const config = { reposRoot: dir, cwalert: { serviceRepos: {}, baseBranch: "rc" } };
+  const res = await handleCwalertFix({
+    event: { service: "legacy-api", sample: "boom", consoleUrl: "http://x", ts: 1 },
+    config, slack, selfId: "U1",
+  });
+  assert.equal(res.status, "needs_repo");
+  assert.equal(dms.length, 1);
+  assert.match(dms[0], /no git checkout/);
 });
 
 test("state round-trips and prunes to the most recent attempt keys", () => {
