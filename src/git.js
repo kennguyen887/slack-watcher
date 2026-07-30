@@ -1,6 +1,8 @@
+import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { log } from "./log.js";
+import { listRepos } from "./repos.js";
 
 export function git(repoPath, ...args) {
   try {
@@ -41,6 +43,61 @@ export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch)
   }
   log(`[${repoName}] worktree at latest origin/${baseBranch} @ ${tip}${subject ? ` — ${subject.slice(0, 72)}` : ""}`);
   return worktreePath;
+}
+
+/**
+ * GitHub owners of the repos already cloned under REPOS_ROOT, from their origin remotes.
+ * Auto-cloning is limited to these: a PR link for some stranger's repo pasted in Slack must
+ * never make the daemon clone it. Self-maintaining — no allowlist to keep updated.
+ */
+export function clonedRepoOwners(reposRoot) {
+  const owners = new Set();
+  for (const name of listRepos(reposRoot)) {
+    try {
+      const url = git(path.join(reposRoot, name), "remote", "get-url", "origin");
+      const owner = url.match(/[:/]([^/:]+)\/[^/]+?(?:\.git)?$/)?.[1];
+      if (owner) owners.add(owner);
+    } catch {
+      // a checkout without an origin tells us nothing about ownership
+    }
+  }
+  return owners;
+}
+
+/**
+ * Local checkout for owner/repo, cloning it on demand. The team creates repos all the time, and
+ * requiring a manual clone per repo meant a review request for a brand-new one failed silently.
+ * @returns {{ repoPath: string, cloned: boolean }}
+ * @throws when the repo may not be cloned, or a non-git folder already occupies the path
+ */
+export function ensureRepo({ reposRoot, repo, owner, timeoutMs = 300_000 }) {
+  const repoPath = path.join(reposRoot, repo);
+  if (fs.existsSync(path.join(repoPath, ".git"))) return { repoPath, cloned: false };
+  // A stale non-git copy (an unpacked download, a checkout that lost its .git) would make the
+  // clone fail with a confusing "directory not empty" — name the real problem instead.
+  if (fs.existsSync(repoPath)) {
+    throw new Error(`${repoPath} exists but is not a git checkout — remove it, or clone the repo there yourself`);
+  }
+  const owners = clonedRepoOwners(reposRoot);
+  const resolvedOwner = owner || (owners.size === 1 ? [...owners][0] : null);
+  if (!resolvedOwner) {
+    throw new Error(`cannot tell which GitHub owner \`${repo}\` belongs to (cloned repos span ${owners.size} owners)`);
+  }
+  if (!owners.has(resolvedOwner)) {
+    throw new Error(`refusing to clone ${resolvedOwner}/${repo} — no repo from that owner is cloned under REPOS_ROOT`);
+  }
+  log(`[${repo}] not cloned yet — cloning ${resolvedOwner}/${repo}...`);
+  try {
+    execFileSync("gh", ["repo", "clone", `${resolvedOwner}/${repo}`, repoPath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+    });
+  } catch (err) {
+    throw new Error(`gh repo clone ${resolvedOwner}/${repo} failed: ${err.stderr?.toString().trim() || err.message}`);
+  }
+  log(`[${repo}] cloned into ${repoPath}`);
+  return { repoPath, cloned: true };
 }
 
 export function removeWorktree(repoPath, worktreePath) {

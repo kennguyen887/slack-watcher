@@ -172,7 +172,9 @@ test("handleCwalertFix bails out (no worktree) when the target repo isn't a git 
   });
   assert.equal(res.status, "needs_repo");
   assert.equal(dms.length, 1);
-  assert.match(dms[0], /no git checkout/);
+  // A stale non-git copy must NOT be cloned over (and must not reach the network) — the DM names
+  // the real blocker instead of gh's "directory not empty".
+  assert.match(dms[0], /not a git checkout/);
 });
 
 test("state round-trips and prunes to the most recent attempt keys", () => {

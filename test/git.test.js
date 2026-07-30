@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { createWorktree } from "../src/git.js";
+import { clonedRepoOwners, createWorktree, ensureRepo } from "../src/git.js";
 
 const g = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 
@@ -52,4 +52,25 @@ test("createWorktree throws a clear error when the base branch does not exist on
     () => createWorktree(work, "repo", "1.0", path.join(root, "wt"), "does-not-exist"),
     /base branch origin\/does-not-exist not found/,
   );
+});
+
+// ensureRepo clones a repo the team just created, so a review/fix request for it stops failing
+// silently. The guard that matters: it must never clone an owner we don't already work with.
+test("ensureRepo returns an existing checkout, and refuses to clone an unknown owner", () => {
+  const reposRoot = fs.mkdtempSync(path.join(os.tmpdir(), "repos-"));
+  const { work } = makeRemoteAndClone("main");
+  const cloned = path.join(reposRoot, "known-repo");
+  fs.cpSync(work, cloned, { recursive: true });
+  g(cloned, "remote", "set-url", "origin", "git@github.com:Acme-Org/known-repo.git");
+
+  // already cloned → no network, same path back
+  assert.deepEqual(ensureRepo({ reposRoot, repo: "known-repo", owner: "Acme-Org" }), { repoPath: cloned, cloned: false });
+  assert.deepEqual([...clonedRepoOwners(reposRoot)], ["Acme-Org"]);
+
+  // a stranger's repo is never cloned, however the link got into Slack
+  assert.throws(() => ensureRepo({ reposRoot, repo: "evil", owner: "Someone-Else" }), /refusing to clone/);
+
+  // a stale non-git folder is reported, not clobbered
+  fs.mkdirSync(path.join(reposRoot, "half-copy"));
+  assert.throws(() => ensureRepo({ reposRoot, repo: "half-copy", owner: "Acme-Org" }), /not a git checkout/);
 });

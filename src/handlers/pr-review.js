@@ -1,7 +1,5 @@
-import path from "node:path";
-import fs from "node:fs";
 import { runClaude, CancelledError } from "../claude.js";
-import { createWorktree, removeWorktree } from "../git.js";
+import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { parsePrUrl } from "../github.js";
 import { log } from "../log.js";
@@ -46,10 +44,16 @@ export async function handlePrReview(ctx) {
     );
     return { status: "no_pr_url" };
   }
-  const repoPath = path.join(config.reposRoot, pr.repo);
-  if (!fs.existsSync(repoPath)) {
-    await slack.postToSelf(selfId, `:warning: PR review requested for *${pr.repo}* but that repo is not cloned locally.\n${pr.url}`);
-    return { status: "repo_missing" };
+  let repoPath;
+  try {
+    ({ repoPath } = ensureRepo({ reposRoot: config.reposRoot, repo: pr.repo, owner: pr.owner }));
+  } catch (err) {
+    log(`[review:${pr.repo}] no local checkout: ${err.message}`);
+    await slack.postToSelf(
+      selfId,
+      `:warning: Can't review ${pr.url} — no local checkout of *${pr.repo}*: ${err.message}\nOriginal: ${mention.permalink ?? "n/a"}`,
+    );
+    return { status: "repo_missing", error: err.message };
   }
 
   const dmChannel = await slack.postToSelf(

@@ -1,7 +1,5 @@
-import path from "node:path";
-import fs from "node:fs";
 import { runClaude, CancelledError } from "../claude.js";
-import { createWorktree, removeWorktree } from "../git.js";
+import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { waitForChecks, mergePr } from "../github.js";
 import { log } from "../log.js";
 import { minutes, trim, watchForStop } from "./shared.js";
@@ -105,17 +103,20 @@ export function autoMergeDecision({ event, confidence, tests, pr, cfg }) {
 export async function handleCwalertFix({ event, config, slack, selfId }) {
   const cfg = config.cwalert;
   const repo = repoForService(event.service, cfg.serviceRepos);
-  const repoPath = repo ? path.join(config.reposRoot, repo) : null;
 
-  // Require an actual git checkout under REPOS_ROOT — a bare folder (e.g. a service that was
-  // never cloned) would only fail later at `git fetch`. existsSync covers both a .git dir and
-  // a .git file (worktrees/submodules), matching listRepos().
-  if (!repoPath || !fs.existsSync(path.join(repoPath, ".git"))) {
+  // Needs a real checkout under REPOS_ROOT — clone it if the service's repo isn't there yet.
+  // The alerter carries no GitHub owner, so ensureRepo infers it from the repos already cloned.
+  let repoPath;
+  try {
+    if (!repo) throw new Error("could not derive a repo name from the service");
+    ({ repoPath } = ensureRepo({ reposRoot: config.reposRoot, repo }));
+  } catch (err) {
+    log(`[cwalert:${repo || "?"}] no local checkout: ${err.message}`);
     await slack.postToSelf(
       selfId,
-      `:warning: *${originOf(event)} ${event.severity}* in *${event.service}* — no git checkout for repo \`${repo || "?"}\` under REPOS_ROOT, can't auto-fix. Clone it there or map it via CWALERT_SERVICE_REPOS.\n> ${trim(event.sample)}\nLogs: ${event.consoleUrl}`,
+      `:warning: *${originOf(event)} ${event.severity}* in *${event.service}* — can't auto-fix, no checkout for \`${repo || "?"}\`: ${err.message}\nMap it via CWALERT_SERVICE_REPOS if the repo name differs.\n> ${trim(event.sample)}\nLogs: ${event.consoleUrl}`,
     );
-    return { status: "needs_repo", repo };
+    return { status: "needs_repo", repo, error: err.message };
   }
 
   const branchName = `auto/cwalert-${String(event.ts)}`;
