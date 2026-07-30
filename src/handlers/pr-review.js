@@ -16,7 +16,7 @@ ${mention.text}
 """
 ${contextBlock}${attachmentsBlock}
 Workflow:
-1. PRE-CHECK first: run \`gh api user --jq .login\` and \`gh pr view ${pr.number} --json author,state,isDraft,reviews,comments\`. STOP immediately and post nothing (REVIEW_COMMENTS: 0, explain in SLACK_REPLY) if ANY of these holds:
+1. PRE-CHECK first: run \`gh api user --jq .login\` and \`gh pr view ${pr.number} --json author,state,isDraft,reviews,comments\`. STOP immediately and post nothing (report REVIEW_STATUS: skipped, REVIEW_COMMENTS: 0, and say why in SLACK_REPLY) if ANY of these holds:
    - the PR author is me (never review my own PR),
    - I already submitted a review or comments on this PR (never double-review),
    - the PR is closed or merged.
@@ -30,8 +30,29 @@ Workflow:
 8. If the PR has no real issues, post nothing at all.
 
 End your final message with exactly these lines:
+REVIEW_STATUS: <reviewed | skipped — "skipped" if the PRE-CHECK stopped you (my own PR, I already reviewed it, or it is closed/merged) or you could not review the PR at all. Only "reviewed" means you actually read this diff.>
 REVIEW_COMMENTS: <number of inline comments you posted, 0 if none>
 SLACK_REPLY: <one short sentence in ${detectLang(mention.text) === "vi" ? "Vietnamese" : "English"} (match the language of the Slack message above, ignore the context block): if comments were posted, say you added review comments on the PR; if zero, say the PR looks good to you>`;
+}
+
+/**
+ * What the worker reported, and what (if anything) belongs in the Slack thread.
+ *
+ * threadReply is null whenever the diff was NOT actually reviewed. A pre-check bail — my own PR,
+ * one I already reviewed, one already closed/merged — reports 0 comments just like a clean review
+ * does, and answering "LGTM!" to that tells the team a PR was reviewed when nobody read it. Those
+ * cases stay a self-DM. An unparseable result also gets no reply.
+ * @returns {{ commentCount: number, reviewed: boolean, slackReply: string, threadReply: string|null }}
+ */
+export function reviewOutcome(result) {
+  const commentCount = Number.parseInt(result.match(/^REVIEW_COMMENTS:\s*(\d+)/m)?.[1] ?? "NaN", 10);
+  const reviewed = result.match(/^REVIEW_STATUS:\s*(\w+)/m)?.[1]?.toLowerCase() === "reviewed";
+  const slackReply = result.match(/SLACK_REPLY:\s*([\s\S]+)$/m)?.[1]?.trim() ?? "";
+  let threadReply = null;
+  if (reviewed && !Number.isNaN(commentCount)) {
+    threadReply = commentCount > 0 ? slackReply || "I added some review comments on the PR." : "LGTM!";
+  }
+  return { commentCount, reviewed, slackReply, threadReply };
 }
 
 export async function handlePrReview(ctx) {
@@ -120,30 +141,44 @@ export async function handlePrReview(ctx) {
     log(`[review:${pr.repo}] finished after ${minutes(Date.now() - startedAt)} min, worktree removed`);
   }
 
-  const commentCount = Number.parseInt(result.match(/^REVIEW_COMMENTS:\s*(\d+)/m)?.[1] ?? "NaN", 10);
-  const slackReply = result.match(/SLACK_REPLY:\s*([\s\S]+)$/m)?.[1]?.trim() ?? "";
-  log(`[review:${pr.repo}] result: ${Number.isNaN(commentCount) ? "unparseable" : `${commentCount} comment(s)`}`);
+  const outcome = reviewOutcome(result);
+  const { commentCount, threadReply } = outcome;
+  log(`[review:${pr.repo}] result: ${threadReply === null ? "no thread reply, " : ""}${Number.isNaN(commentCount) ? "unparseable" : `${commentCount} comment(s)`}`);
 
-  // Reply in the thread either way: the drafted line when comments were posted,
-  // or "LGTM!" when the PR is clean. (No reply only if the result was unparseable.)
   let repliedInThread = false;
-  if (!Number.isNaN(commentCount) && mention.channel?.id) {
-    const threadReply = commentCount > 0 ? slackReply || "I added some review comments on the PR." : "LGTM!";
+  if (threadReply !== null && mention.channel?.id) {
     await slack.replyInThread(mention.channel.id, threadTsOf(mention), threadReply);
     repliedInThread = true;
   }
 
   await slack.postToSelf(
     selfId,
-    trim(
-      Number.isNaN(commentCount)
-        ? `:warning: PR review finished but I couldn't parse the result for ${pr.url} — check the PR manually.\n\nWorker output:\n${result}`
-        : commentCount > 0
-          ? `:white_check_mark: *PR review done* — posted ${commentCount} inline comment(s) on ${pr.url}` +
-            (repliedInThread ? `\nReplied in the Slack thread.` : "\n:warning: Could not reply in the Slack thread — do it manually.")
-          : `:white_check_mark: *PR review done* — no real issues found on ${pr.url}.` +
-            (repliedInThread ? ` Replied *LGTM!* in the Slack thread.` : ` (couldn't reply in the thread — do it manually.)`),
-    ),
+    trim(dmForOutcome({ pr, result, outcome, repliedInThread })),
   );
-  return { status: "reviewed", comments: Number.isNaN(commentCount) ? null : commentCount, repliedInThread };
+  return {
+    status: outcome.reviewed ? "reviewed" : "skipped",
+    comments: Number.isNaN(commentCount) ? null : commentCount,
+    repliedInThread,
+  };
+}
+
+/** Self-DM wording per outcome — a skipped review must never read like a completed one. */
+function dmForOutcome({ pr, result, outcome, repliedInThread }) {
+  const { commentCount, reviewed, slackReply } = outcome;
+  if (Number.isNaN(commentCount)) {
+    return `:warning: PR review finished but I couldn't parse the result for ${pr.url} — check the PR manually.\n\nWorker output:\n${result}`;
+  }
+  if (!reviewed) {
+    return `:information_source: *Review skipped* — ${pr.url} was not reviewed${slackReply ? `: ${slackReply}` : " (pre-check stopped it: my own PR, already reviewed, or closed/merged)"}\nNothing posted on the PR or in the Slack thread.`;
+  }
+  if (commentCount > 0) {
+    return (
+      `:white_check_mark: *PR review done* — posted ${commentCount} inline comment(s) on ${pr.url}` +
+      (repliedInThread ? `\nReplied in the Slack thread.` : "\n:warning: Could not reply in the Slack thread — do it manually.")
+    );
+  }
+  return (
+    `:white_check_mark: *PR review done* — no real issues found on ${pr.url}.` +
+    (repliedInThread ? ` Replied *LGTM!* in the Slack thread.` : ` (couldn't reply in the thread — do it manually.)`)
+  );
 }
