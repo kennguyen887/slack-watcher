@@ -30,10 +30,11 @@ function parseJsonEnv(raw) {
   }
 }
 
-function intOption(raw, fallback, { min } = {}) {
+function intOption(raw, fallback, { min, max } = {}) {
   const value = raw === undefined || raw === "" ? fallback : Number.parseInt(raw, 10);
   if (!Number.isInteger(value)) return fallback;
-  return min !== undefined ? Math.max(min, value) : value;
+  const floored = min !== undefined ? Math.max(min, value) : value;
+  return max !== undefined ? Math.min(max, floored) : floored;
 }
 
 export function loadConfig() {
@@ -73,6 +74,15 @@ export function loadConfig() {
       // trailing " (...)" suffix, e.g. "listings-api (rc scheduler)" → "listings-api".
       serviceRepos: parseJsonEnv(env.CWALERT_SERVICE_REPOS),
       stateFile: path.join(BASE_DIR, "cwalert-state.json"),
+      // ── auto-merge (RC only) ──
+      // A fix for a service that is DOWN on RC may merge itself; prod never does. Every gate
+      // below must hold — see autoMergeDecision() in handlers/cwalert-fix.js.
+      autoMerge: env.CWALERT_AUTOMERGE === "1" || env.CWALERT_AUTOMERGE === "true",
+      autoMergeEnvs: (env.CWALERT_AUTOMERGE_ENVS || "rc").split(",").map((s) => s.trim()).filter(Boolean),
+      autoMergeMinConfidence: intOption(env.CWALERT_AUTOMERGE_MIN_CONFIDENCE, 9, { min: 1, max: 10 }),
+      autoMergeMaxFiles: intOption(env.CWALERT_AUTOMERGE_MAX_FILES, 5, { min: 1 }),
+      autoMergeMaxLines: intOption(env.CWALERT_AUTOMERGE_MAX_LINES, 200, { min: 1 }),
+      autoMergeChecksTimeoutMs: intOption(env.CWALERT_AUTOMERGE_CHECKS_TIMEOUT_MIN, 10, { min: 1 }) * 60_000,
     },
     worktreesDir: path.join(BASE_DIR, "worktrees"),
     attachmentsDir: path.join(BASE_DIR, "attachments"),

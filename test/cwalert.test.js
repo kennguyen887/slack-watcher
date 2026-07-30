@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { selectEvents, readNewEvents, loadCwalertState, saveCwalertState } from "../src/sources/cwalert.js";
-import { repoForService, handleCwalertFix } from "../src/handlers/cwalert-fix.js";
+import { repoForService, handleCwalertFix, autoMergeDecision } from "../src/handlers/cwalert-fix.js";
 
 const HOUR = 3_600_000;
 const ev = (over = {}) => ({ v: 1, ts: 1000, key: "k1", severity: "error", service: "listings-api", sample: "boom", lastTs: 1000, ...over });
@@ -49,6 +49,52 @@ test("selectEvents picks up a fatal event from the Sentry producer", () => {
   const { toFix } = selectEvents([sentry], {}, { cooldownMs: HOUR, maxPerPoll: 5, nowMs: 10_000 });
   assert.deepEqual(toFix.map((e) => e.key), ["sentry:LISTINGS-API-RC-F"]);
   assert.equal(repoForService(toFix[0].service), "listings-api");
+});
+
+// Auto-merge lands unreviewed code on a shared branch, so the gates are pinned: an RC crash with
+// a confident, small, green fix merges — every other combination must wait for a human.
+const MERGE_CFG = {
+  autoMerge: true,
+  autoMergeEnvs: ["rc"],
+  autoMergeMinConfidence: 9,
+  autoMergeMaxFiles: 5,
+  autoMergeMaxLines: 200,
+};
+const CLEAN_PR = { state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", checks: "none", changedFiles: 2, changedLines: 40 };
+const decide = (over = {}) =>
+  autoMergeDecision({
+    event: { env: "rc", severity: "fatal" },
+    confidence: 9,
+    tests: "pass",
+    pr: CLEAN_PR,
+    cfg: MERGE_CFG,
+    ...over,
+  });
+
+test("autoMergeDecision merges only an RC crash with a confident, tested, small, clean PR", () => {
+  assert.equal(decide().merge, true);
+
+  const blocked = [
+    ["prod is never auto-merged", { event: { env: "prod", severity: "fatal" } }],
+    ["unknown env is never auto-merged", { event: { env: undefined, severity: "fatal" } }],
+    ["a non-crash error is not auto-merged", { event: { env: "rc", severity: "error" } }],
+    ["low confidence blocks", { confidence: 8 }],
+    ["missing confidence blocks", { confidence: NaN }],
+    ["failing tests block", { tests: "fail" }],
+    ["unrun tests block", { tests: "none" }],
+    ["failing CI blocks", { pr: { ...CLEAN_PR, checks: "failed" } }],
+    ["pending CI blocks", { pr: { ...CLEAN_PR, checks: "pending" } }],
+    ["conflicts block", { pr: { ...CLEAN_PR, mergeable: "CONFLICTING" } }],
+    ["a draft blocks", { pr: { ...CLEAN_PR, isDraft: true } }],
+    ["a sprawling diff blocks", { pr: { ...CLEAN_PR, changedFiles: 9 } }],
+    ["too many changed lines block", { pr: { ...CLEAN_PR, changedLines: 500 } }],
+    ["the kill switch blocks", { cfg: { ...MERGE_CFG, autoMerge: false } }],
+  ];
+  for (const [label, over] of blocked) {
+    const d = decide(over);
+    assert.equal(d.merge, false, label);
+    assert.ok(d.reason.length > 0, `${label} states a reason`);
+  }
 });
 
 test("selectEvents suppresses signatures inside the cooldown window", () => {

@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, removeWorktree } from "../git.js";
+import { waitForChecks, mergePr } from "../github.js";
 import { log } from "../log.js";
 import { minutes, trim, watchForStop } from "./shared.js";
 
@@ -21,7 +22,7 @@ function originOf(event) {
 
 /** Producer-specific context lines: a Sentry issue has no log group / pattern / occurrence count. */
 function eventContext(event) {
-  const lines = [`• Service: ${event.service}`, `• Severity: ${event.severity}`];
+  const lines = [`• Service: ${event.service}`, `• Environment: ${event.env ?? "unknown"}`, `• Severity: ${event.severity}`];
   if (event.source === "sentry") {
     lines.push(`• Sentry project: ${event.project}`, `• Sentry issue: ${event.consoleUrl}`);
   } else {
@@ -62,7 +63,39 @@ Mandatory workflow for this repository:
 
 End your final message with exactly these lines:
 PR_URL: <the pull request URL, or "none" if you opened no PR>
+ROOT_CAUSE_CONFIDENCE: <1-10 — how sure you are this is THE root cause, not a plausible story. Be honest: an unreproduced hypothesis is <=5 however tidy it looks. This number can auto-merge the PR on RC, so overclaiming ships unreviewed code>
+TESTS: <pass | fail | none — did the repo's own test suite run green in the worktree?>
 SLACK_DRAFT: <a short status line for me (English) — the fix summary, or why this wasn't auto-fixable>`;
+}
+
+/** Could this event's PR merge itself at all? The env/severity half of the gate, known up front. */
+export function armedForAutoMerge(event, cfg) {
+  return Boolean(cfg.autoMerge) && cfg.autoMergeEnvs.includes(event.env) && event.severity === "fatal";
+}
+
+/**
+ * Should this PR merge itself? Every gate must hold. Returns the first blocking reason instead of
+ * a bare false so the DM can say WHY a fix is waiting on a human.
+ * @returns {{ merge: boolean, reason: string }}
+ */
+export function autoMergeDecision({ event, confidence, tests, pr, cfg }) {
+  if (!cfg.autoMerge) return { merge: false, reason: "auto-merge is off (CWALERT_AUTOMERGE)" };
+  // prod (and any env we can't identify) is never merged by a machine.
+  if (!cfg.autoMergeEnvs.includes(event.env)) return { merge: false, reason: `env \`${event.env ?? "unknown"}\` is review-only` };
+  // "killed the service", not "logged an error": only a crash the app itself called fatal.
+  if (event.severity !== "fatal") return { merge: false, reason: `severity \`${event.severity}\` is not a crash` };
+  if (!(confidence >= cfg.autoMergeMinConfidence)) {
+    return { merge: false, reason: `root-cause confidence ${confidence ?? "?"}/10 < ${cfg.autoMergeMinConfidence}` };
+  }
+  if (tests !== "pass") return { merge: false, reason: `tests: ${tests ?? "unknown"}` };
+  if (pr.state !== "OPEN" || pr.isDraft) return { merge: false, reason: `PR is ${pr.isDraft ? "a draft" : pr.state.toLowerCase()}` };
+  if (pr.mergeable !== "MERGEABLE") return { merge: false, reason: `GitHub says ${pr.mergeable} (${pr.mergeStateStatus})` };
+  if (pr.checks === "failed" || pr.checks === "pending") return { merge: false, reason: `CI checks ${pr.checks}` };
+  // A root-cause fix for a crash is small. A sprawling diff means it grew into something else.
+  if (pr.changedFiles > cfg.autoMergeMaxFiles || pr.changedLines > cfg.autoMergeMaxLines) {
+    return { merge: false, reason: `diff too large (${pr.changedFiles} files / ${pr.changedLines} lines)` };
+  }
+  return { merge: true, reason: pr.checks === "none" ? "gates passed (repo runs no CI — worker's own tests only)" : "gates passed, CI green" };
 }
 
 /**
@@ -92,6 +125,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       `> ${trim(event.sample)}\n` +
       `• Service: *${event.service}* → repo *${repo}* (branch \`${branchName}\`, isolated worktree)\n` +
       `• Base: fresh \`origin/${cfg.baseBranch}\` — your working copy is untouched\n` +
+      `• ${armedForAutoMerge(event, cfg) ? `Auto-merge ARMED (env \`${event.env}\`, fatal) — merges itself only if confidence ≥ ${cfg.autoMergeMinConfidence}/10, tests pass, PR clean and diff ≤ ${cfg.autoMergeMaxFiles} files/${cfg.autoMergeMaxLines} lines` : "Auto-merge off for this event — I'll ping you to review"}\n` +
       `• Reply \`stop\` here to cancel while it runs. Timeout ${minutes(config.workerTimeoutMs)} min — I'll DM the result (PR or reason).\n` +
       `Logs: ${event.consoleUrl}`,
   );
@@ -145,21 +179,77 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
 
   const elapsedMin = minutes(Date.now() - startedAt);
   const prUrl = result.match(/^PR_URL:\s*(\S+)/m)?.[1] ?? "none";
+  const confidence = Number.parseInt(result.match(/^ROOT_CAUSE_CONFIDENCE:\s*(\d+)/m)?.[1] ?? "", 10);
+  const tests = result.match(/^TESTS:\s*(\w+)/m)?.[1]?.toLowerCase() ?? "unknown";
   const slackDraft = result.match(/SLACK_DRAFT:\s*([\s\S]+)$/m)?.[1]?.trim() ?? "";
   log(`[cwalert:${repo}] result: ${prUrl !== "none" ? `PR ${prUrl}` : "no PR"}`);
 
-  const header =
-    prUrl !== "none"
-      ? `:white_check_mark: *Auto-fix PR opened* for *${repo}* in ${elapsedMin} min: ${prUrl}`
-      : `:information_source: *No auto-fix PR* for the ${originOf(event)} error in *${repo}* (${elapsedMin} min) — likely not a code bug (see below):`;
+  if (prUrl === "none") {
+    await slack.postToSelf(
+      selfId,
+      trim(
+        `:information_source: *No auto-fix PR* for the ${originOf(event)} error in *${repo}* (${elapsedMin} min) — likely not a code bug (see below):\n` +
+          `> ${event.sample}\nLogs: ${event.consoleUrl}` +
+          (slackDraft ? `\n\n${slackDraft}` : "") +
+          `\n\nWorker output:\n${result}`,
+      ),
+    );
+    return { status: "no_pr", prUrl };
+  }
 
+  const merged = await settlePr({ prUrl, event, repo, confidence, tests, cfg });
   await slack.postToSelf(
     selfId,
     trim(
-      `${header}\n> ${event.sample}\nLogs: ${event.consoleUrl}` +
+      `${prHeader({ event, repo, prUrl, elapsedMin, merged })}\n> ${event.sample}\nLogs: ${event.consoleUrl}` +
         (slackDraft ? `\n\n${slackDraft}` : "") +
-        (prUrl === "none" ? `\n\nWorker output:\n${result}` : ""),
+        `\n_root-cause confidence ${Number.isInteger(confidence) ? `${confidence}/10` : "not stated"} · tests: ${tests}_`,
     ),
   );
-  return { status: prUrl !== "none" ? "pr_opened" : "no_pr", prUrl };
+  return { status: merged.merged ? "pr_merged" : "pr_opened", prUrl, merged };
+}
+
+/**
+ * Decide and, if every gate holds, merge the PR. Never throws: a merge failure must still leave
+ * the user with a DM and an open PR they can merge by hand.
+ * @returns {Promise<{ merged: boolean, reason: string, sha?: string, error?: string }>}
+ */
+async function settlePr({ prUrl, event, repo, confidence, tests, cfg }) {
+  if (!cfg.autoMerge || !cfg.autoMergeEnvs.includes(event.env)) {
+    return { merged: false, reason: autoMergeDecision({ event, confidence, tests, pr: {}, cfg }).reason };
+  }
+  let pr;
+  try {
+    // Checks usually haven't started the second the PR opens — wait, bounded, before judging.
+    pr = await waitForChecks(prUrl, { timeoutMs: cfg.autoMergeChecksTimeoutMs });
+  } catch (err) {
+    return { merged: false, reason: `could not read PR status: ${err.message}` };
+  }
+  const decision = autoMergeDecision({ event, confidence, tests, pr, cfg });
+  if (!decision.merge) return { merged: false, reason: decision.reason };
+  try {
+    const sha = mergePr(prUrl);
+    log(`[cwalert:${repo}] auto-merged ${prUrl} (${sha})`);
+    return { merged: true, reason: decision.reason, sha };
+  } catch (err) {
+    log(`[cwalert:${repo}] auto-merge FAILED for ${prUrl}: ${err.message}`);
+    return { merged: false, reason: `merge failed: ${err.message}`, error: err.message };
+  }
+}
+
+/** Slack header: merged (RC), or an urgent ping when a human has to merge it. */
+function prHeader({ event, repo, prUrl, elapsedMin, merged }) {
+  if (merged.merged) {
+    return (
+      `:white_check_mark: *Auto-fix MERGED to \`rc\`* for *${repo}* in ${elapsedMin} min: ${prUrl}\n` +
+      `• Gate: ${merged.reason}${merged.sha ? ` · commit \`${merged.sha.slice(0, 8)}\`` : ""}\n` +
+      `• Revert: \`gh pr create\` from \`git revert ${merged.sha ? merged.sha.slice(0, 8) : "<sha>"}\` — nobody reviewed this before it landed`
+    );
+  }
+  const urgent = event.env === "prod";
+  return (
+    `${urgent ? ":rotating_light::rotating_light: *PROD — REVIEW + MERGE NEEDED*" : ":white_check_mark: *Auto-fix PR opened*"}` +
+    ` for *${repo}* in ${elapsedMin} min: ${prUrl}\n` +
+    `• Not auto-merged: ${merged.reason}`
+  );
 }

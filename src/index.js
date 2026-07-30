@@ -140,6 +140,13 @@ async function main() {
 
   if (config.cwalert.enabled) {
     log(`cwalert source ON — event log ${config.cwalert.eventLog}, base ${config.cwalert.baseBranch}, cooldown ${Math.round(config.cwalert.cooldownMs / 3_600_000)}h`);
+    // Auto-merge lands unreviewed code on a shared branch — never let it be a surprise: say so
+    // on every start, so the log itself shows whether the kill switch is on.
+    log(
+      config.cwalert.autoMerge
+        ? `cwalert auto-merge ARMED for env ${config.cwalert.autoMergeEnvs.join("/")} — fatal only, confidence >= ${config.cwalert.autoMergeMinConfidence}/10, diff <= ${config.cwalert.autoMergeMaxFiles} files/${config.cwalert.autoMergeMaxLines} lines (CWALERT_AUTOMERGE=0 to disarm)`
+        : "cwalert auto-merge OFF — every fix PR waits for you",
+    );
   }
 
   do {
