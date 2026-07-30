@@ -5,6 +5,10 @@ import { handleCwalertFix } from "../handlers/cwalert-fix.js";
 import { trim } from "../handlers/shared.js";
 
 const MAX_ATTEMPT_KEYS = 500;
+// Severities worth an auto-fix attempt. `fatal` comes from the Sentry producer (a crash the
+// app itself classified); the CloudWatch alerter only ever emits `error`. Anything else
+// (warn/info) is noise we must not open PRs for.
+const FIXABLE_SEVERITIES = new Set(["error", "fatal"]);
 
 export function loadCwalertState(stateFile) {
   if (!fs.existsSync(stateFile)) return { initialized: false, offset: 0, attempts: {} };
@@ -67,7 +71,7 @@ export function selectEvents(lines, attempts, { cooldownMs, maxPerPoll, nowMs })
     } catch {
       continue;
     }
-    if (e && e.severity === "error" && e.key) byKey.set(e.key, e); // later line = newer occurrence
+    if (e && FIXABLE_SEVERITIES.has(e.severity) && e.key) byKey.set(e.key, e); // later line = newer occurrence
   }
   const fresh = [...byKey.values()]
     .filter((e) => !attempts[e.key] || nowMs - attempts[e.key] >= cooldownMs)
@@ -76,8 +80,9 @@ export function selectEvents(lines, attempts, { cooldownMs, maxPerPoll, nowMs })
 }
 
 /**
- * One poll of the CloudWatch auto-fix source: read new events, pick fresh error signatures,
- * spawn a fix worker for up to maxPerPoll of them, and note (but don't fix) the overflow.
+ * One poll of the auto-fix source — the CloudWatch alerter and check-sentry.sh both append to
+ * the same event log. Read new events, pick fresh error signatures, spawn a fix worker for up
+ * to maxPerPoll of them, and note (but don't fix) the overflow.
  * Fixes run sequentially — the daemon already processes work one at a time.
  */
 export async function pollCwalert(config, slack, selfId, nowMs = Date.now()) {
@@ -122,7 +127,7 @@ export async function pollCwalert(config, slack, selfId, nowMs = Date.now()) {
     } catch (err) {
       log(`cwalert source: ERROR fixing ${event.key}: ${err.message}`);
       await slack
-        .postToSelf(selfId, `:x: Auto-fix worker crashed on a CloudWatch error in *${event.service}*: ${err.message}\nLogs: ${event.consoleUrl}`)
+        .postToSelf(selfId, `:x: Auto-fix worker crashed on an alert in *${event.service}*: ${err.message}\nLogs: ${event.consoleUrl}`)
         .catch(() => {});
     }
   }
@@ -132,7 +137,7 @@ export async function pollCwalert(config, slack, selfId, nowMs = Date.now()) {
       .postToSelf(
         selfId,
         trim(
-          `:information_source: ${overflow.length} more distinct CloudWatch error(s) this cycle — not auto-fixing (per-poll cap ${cfg.maxPerPoll}, cooldown ${Math.round(cfg.cooldownMs / 3_600_000)}h). Check #monitoring:\n` +
+          `:information_source: ${overflow.length} more distinct alert(s) this cycle — not auto-fixing (per-poll cap ${cfg.maxPerPoll}, cooldown ${Math.round(cfg.cooldownMs / 3_600_000)}h). Check #monitoring:\n` +
             overflow.map((e) => `• *${e.service}* — ${String(e.sample).replace(/\s+/g, " ").slice(0, 160)}`).join("\n"),
         ),
       )

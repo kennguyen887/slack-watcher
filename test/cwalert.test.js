@@ -32,6 +32,25 @@ test("selectEvents keeps only severity:error and dedupes by key (newest wins)", 
   assert.equal(toFix[0].sample, "new");
 });
 
+// Regression (2026-07-29): a Sentry-emitted crash carries severity "fatal" and no lastTs. The
+// old error-only filter dropped it, so a crash-looping RC service was alerted but never fixed.
+test("selectEvents picks up a fatal event from the Sentry producer", () => {
+  const sentry = JSON.stringify({
+    v: 1,
+    ts: 5_000,
+    source: "sentry",
+    key: "sentry:LISTINGS-API-RC-F",
+    severity: "fatal",
+    service: "listings-api",
+    project: "listings-api-rc",
+    sample: "Error: Cannot find package '@fn/shared'",
+    consoleUrl: "https://sentry.io/issues/1/",
+  });
+  const { toFix } = selectEvents([sentry], {}, { cooldownMs: HOUR, maxPerPoll: 5, nowMs: 10_000 });
+  assert.deepEqual(toFix.map((e) => e.key), ["sentry:LISTINGS-API-RC-F"]);
+  assert.equal(repoForService(toFix[0].service), "listings-api");
+});
+
 test("selectEvents suppresses signatures inside the cooldown window", () => {
   const attempts = { a: 10_000 };
   const lines = [line({ key: "a" }), line({ key: "b" })];
