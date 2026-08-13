@@ -8,8 +8,8 @@ A personal Slack → Claude Code automation daemon. It watches Slack for message
 |---|---|
 | "@you fix the price filter on the listing page" | Spawns a headless [Claude Code](https://claude.com/claude-code) worker in a **disposable git worktree** → implements the fix → runs tests/lint → opens a **draft PR** targeting your integration branch |
 | "Please review this PR: github.com/…/pull/123" (mention optional) | Reviews the PR → posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs only, minor nits skipped, plain English) → replies in the Slack thread (or just **"LGTM!"** when the PR is clean) |
-| "@you when do we deploy?" | Drafts an answer using your repos/docs as context → DMs it to you privately — you review and paste |
 | "@you fix the bug" (too vague) | DMs you 1-3 ready-to-send clarifying questions instead of guessing |
+| "@you when do we deploy?" | Skipped — the watcher only acts on code requests and PR reviews; questions are yours to answer |
 | "thanks @you!" / FYI / status update | Ignored — nothing happens |
 
 Built-in guardrails and quality-of-life:
@@ -21,7 +21,7 @@ Built-in guardrails and quality-of-life:
 - **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs.
 - **Your working copy is sacred** — workers only ever touch throwaway worktrees; drafts only; nothing public without the grace gate.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
-- **Manual send CLI** — fire off the drafted replies (or anything) to a channel or DM in one command.
+- **Manual send CLI** — fire off any message to a channel or DM in one command.
 
 ## Requirements
 
@@ -59,20 +59,20 @@ poll (45s) ──► search.messages: mentions of you  ──┐
                               fetch thread / nearby messages as context
                                                     ▼
                        classify (claude haiku): code_request │ pr_review │
-                            question │ needs_clarification │ ignore
+                  needs_clarification │ question (skipped) │ ignore
                                                     ▼
             DM "picked up — starting in N min, reply stop to cancel"
                                                     ▼
               disposable git worktree from origin/<BASE_BRANCH>
                                                     ▼
         claude -p worker (streamed progress in console log) ──► draft PR /
-            inline review comments / drafted answer ──► result DM
+                   inline review comments ──► result DM
 ```
 
 Safety properties:
 
 - **Your working copy is never touched** — workers run in throwaway `git worktree`s under `worktrees/`, removed in the background afterwards.
-- **Nothing public without a gate** — PRs are drafts; answers are private DMs; the only public actions (review comments + the "added comments" thread reply) sit behind the grace window ("reply `stop` to cancel").
+- **Nothing public without a gate** — PRs are drafts; the only public actions (review comments + the "added comments" thread reply) sit behind the grace window ("reply `stop` to cancel").
 - **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own or already-reviewed PRs.
 - **Audit trail** — every processed message is appended to `history.jsonl`; live worker progress streams to `logs/watcher.log`.
 

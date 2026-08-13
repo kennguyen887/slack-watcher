@@ -1,7 +1,7 @@
 {
   "name": "slack-watcher",
   "version": "1.0.0",
-  "description": "Slack → Claude Code automation: turns mentions into draft PRs, PR reviews, and drafted answers",
+  "description": "Slack → Claude Code automation: turns mentions into draft PRs and PR reviews",
   "license": "MIT",
   "repository": {
     "type": "git",
