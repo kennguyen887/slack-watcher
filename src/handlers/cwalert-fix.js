@@ -2,7 +2,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { waitForChecks, mergePr } from "../github.js";
 import { log } from "../log.js";
-import { minutes, newSessionId, resumeHint, trim, watchForStop } from "./shared.js";
+import { minutes, newSessionId, resumeHint, showInDesktopApp, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -184,6 +184,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
     // Any non-cancelled outcome keeps the worktree so the fix session can be resumed.
     if (!discarded) {
       log(`[cwalert:${repo}] worker finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      showInDesktopApp(sessionId);
     }
   }
 
@@ -200,7 +201,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       trim(
         `:information_source: *No auto-fix PR* for the ${originOf(event)} error in *${repo}* (${elapsedMin} min) — likely not a code bug (see below):\n` +
           `> ${event.sample}\nLogs: ${event.consoleUrl}` +
-          `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}` +
+          `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(worktreePath, sessionId)}` +
           (slackDraft ? `\n\n${slackDraft}` : "") +
           `\n\nWorker output:\n${result}`,
       ),
@@ -213,7 +214,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
     selfId,
     trim(
       `${prHeader({ event, repo, prUrl, elapsedMin, merged })}\n> ${event.sample}\nLogs: ${event.consoleUrl}` +
-        `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}` +
+        `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(worktreePath, sessionId)}` +
         (slackDraft ? `\n\n${slackDraft}` : "") +
         `\n_root-cause confidence ${Number.isInteger(confidence) ? `${confidence}/10` : "not stated"} · tests: ${tests}_`,
     ),

@@ -3,7 +3,7 @@ import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { parsePrUrl } from "../github.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, threadTsOf, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
 
 function reviewPrompt({ mention, contextBlock }, pr, attachmentsBlock) {
   return `A teammate asked me to review a pull request. Review it and post inline comments under MY GitHub account.
@@ -150,6 +150,7 @@ export async function handlePrReview(ctx) {
     // reopened in Claude Code (e.g. to apply the findings right there).
     if (!discarded) {
       log(`[review:${pr.repo}] finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      showInDesktopApp(sessionId);
     }
   }
 
@@ -165,7 +166,7 @@ export async function handlePrReview(ctx) {
 
   await slack.postToSelf(
     selfId,
-    trim(dmForOutcome({ pr, result, outcome, repliedInThread }) + `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}`),
+    trim(dmForOutcome({ pr, result, outcome, repliedInThread }) + `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(worktreePath, sessionId)}`),
   );
   return {
     status: outcome.reviewed ? "reviewed" : "skipped",

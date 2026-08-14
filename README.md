@@ -20,7 +20,7 @@ Built-in guardrails and quality-of-life:
 - **Grace window + kill switch** — DMs you "starting in N min, reply `stop` to cancel" before doing anything; replying `stop` also works **while the worker runs** (checked every 20 s) and kills the Claude session immediately, discarding the worktree.
 - **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs.
 - **Your working copy is sacred** — workers only ever touch isolated worktrees under `worktrees/`; drafts only; nothing public without the grace gate.
-- **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run: the DM gives you `cd <worktree> && claude --resume <session-id>` to reopen the exact session in Claude Code and keep working. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 3) days of inactivity.
+- **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run. On macOS the finished session is auto-imported into the **Claude desktop app** (via its `claude://resume?session=<id>` deep link), so it just shows up in the app's session list; the DM also gives you `cd <worktree> && claude --resume <session-id>` for the terminal. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 3) days of inactivity.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
 - **Manual send CLI** — fire off any message to a channel or DM in one command.
 

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { log } from "../log.js";
 
 // Every handler receives a ctx object:
@@ -26,6 +27,23 @@ export const newSessionId = () => crypto.randomUUID();
 
 /** Copy-paste command that reopens a worker's session interactively, in its kept worktree. */
 export const resumeHint = (worktreePath, sessionId) => `\`cd ${worktreePath} && claude --resume ${sessionId}\``;
+
+/**
+ * Surface a finished worker session in the Claude desktop app (macOS): the app's
+ * claude://resume deep link imports the CLI transcript from disk and lists the
+ * session in its UI (idempotent — re-importing unarchives the same session).
+ * Fire-and-forget: `-g` keeps the app from stealing focus, and a missing app or
+ * handler must never affect the worker result — the DM still carries the
+ * terminal resume command.
+ */
+export function showInDesktopApp(sessionId) {
+  if (process.platform !== "darwin") return;
+  try {
+    spawn("open", ["-g", `claude://resume?session=${sessionId}`], { detached: true, stdio: "ignore" }).unref();
+  } catch {
+    // DM fallback covers it
+  }
+}
 
 /**
  * While a worker runs, poll the self-DM for a "stop" reply and abort the

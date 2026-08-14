@@ -4,7 +4,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, minutes, newSessionId, resumeHint, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, minutes, newSessionId, resumeHint, showInDesktopApp, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -141,6 +141,7 @@ export async function handleCodeRequest(ctx) {
     // session is resumable in Claude Code exactly where the worker stopped.
     if (!discarded) {
       log(`[${classification.repo}] worker finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      showInDesktopApp(sessionId);
     }
   }
   const elapsedMin = minutes(Date.now() - startedAt);
@@ -158,7 +159,7 @@ export async function handleCodeRequest(ctx) {
     selfId,
     trim(
       `${header}\n> ${classification.summary}\nOriginal: ${mention.permalink ?? "n/a"}` +
-        `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}` +
+        `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(worktreePath, sessionId)}` +
         (slackDraft ? `\n\nDraft reply for the requester:\n${slackDraft}` : "") +
         (prUrl === "none" ? `\n\nWorker output:\n${result}` : ""),
     ),
