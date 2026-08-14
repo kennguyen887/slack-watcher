@@ -4,7 +4,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, minutes, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, minutes, newSessionId, resumeHint, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -84,13 +84,15 @@ export async function handleCodeRequest(ctx) {
     return { status: "worktree_failed", error: err.message };
   }
 
+  const sessionId = newSessionId();
   const startedAt = Date.now();
-  log(`[${classification.repo}] worker started (branch ${branchName}, timeout ${minutes(config.workerTimeoutMs)} min)`);
+  log(`[${classification.repo}] worker started (branch ${branchName}, session ${sessionId}, timeout ${minutes(config.workerTimeoutMs)} min)`);
   await slack.postToSelf(
     selfId,
     `:hammer_and_wrench: *Coding now* — *${classification.repo}* / \`${branchName}\`\n` +
       `> ${classification.summary}\n` +
-      `Worktree ready from fresh \`origin/${config.baseBranch}\`. Next update: result DM (draft PR, stop reason, or timeout after ${minutes(config.workerTimeoutMs)} min). Progress heartbeat every 5 min in \`logs/watcher.log\`.`,
+      `Worktree ready from fresh \`origin/${config.baseBranch}\`. Next update: result DM (draft PR, stop reason, or timeout after ${minutes(config.workerTimeoutMs)} min). Progress heartbeat every 5 min in \`logs/watcher.log\`.\n` +
+      `:technologist: Pick it up in Claude Code afterwards (any outcome): ${resumeHint(worktreePath, sessionId)}`,
   );
   const heartbeat = setInterval(
     () => log(`[${classification.repo}] worker still running (${minutes(Date.now() - startedAt)} min elapsed)`),
@@ -108,6 +110,7 @@ export async function handleCodeRequest(ctx) {
   const stopWatching = watchForStop(ctx, dmChannel, classification.repo, controller);
 
   let result;
+  let discarded = false;
   try {
     result = await runClaude({
       bin: config.claudeBin,
@@ -118,9 +121,12 @@ export async function handleCodeRequest(ctx) {
       model: config.workerModel,
       label: classification.repo,
       signal: controller.signal,
+      sessionId,
     });
   } catch (err) {
     if (err instanceof CancelledError) {
+      discarded = true;
+      removeWorktree(repoPath, worktreePath);
       await slack.postToSelf(
         selfId,
         `:no_entry: *Stopped* — killed the running worker for *${classification.repo}* after ${minutes(Date.now() - startedAt)} min. The worktree was discarded; if a branch/PR was already pushed, close it manually. ${mention.permalink ?? ""}`,
@@ -131,8 +137,11 @@ export async function handleCodeRequest(ctx) {
   } finally {
     stopWatching();
     clearInterval(heartbeat);
-    removeWorktree(repoPath, worktreePath);
-    log(`[${classification.repo}] worker finished after ${minutes(Date.now() - startedAt)} min, worktree removed`);
+    // Any non-cancelled outcome (done, timeout, crash) keeps the worktree: the
+    // session is resumable in Claude Code exactly where the worker stopped.
+    if (!discarded) {
+      log(`[${classification.repo}] worker finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+    }
   }
   const elapsedMin = minutes(Date.now() - startedAt);
 
@@ -149,9 +158,10 @@ export async function handleCodeRequest(ctx) {
     selfId,
     trim(
       `${header}\n> ${classification.summary}\nOriginal: ${mention.permalink ?? "n/a"}` +
+        `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}` +
         (slackDraft ? `\n\nDraft reply for the requester:\n${slackDraft}` : "") +
         (prUrl === "none" ? `\n\nWorker output:\n${result}` : ""),
     ),
   );
-  return { status: prUrl !== "none" ? "pr_opened" : "no_pr", prUrl };
+  return { status: prUrl !== "none" ? "pr_opened" : "no_pr", prUrl, sessionId, worktreePath };
 }

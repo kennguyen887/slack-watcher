@@ -1,5 +1,8 @@
 const SLACK_API = "https://slack.com/api";
 const MAX_RETRIES = 3;
+// A hung socket must never wedge a poll: in one-shot (cron) mode the overlap
+// guard would then skip every future tick behind a process that never exits.
+const REQUEST_TIMEOUT_MS = 30_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -10,6 +13,7 @@ async function call(token, method, params, { httpMethod = "POST" } = {}) {
       const qs = new URLSearchParams(params).toString();
       response = await fetch(`${SLACK_API}/${method}?${qs}`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } else {
       response = await fetch(`${SLACK_API}/${method}`, {
@@ -19,6 +23,7 @@ async function call(token, method, params, { httpMethod = "POST" } = {}) {
           "Content-Type": "application/json; charset=utf-8",
         },
         body: JSON.stringify(params),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     }
 

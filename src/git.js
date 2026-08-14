@@ -9,6 +9,9 @@ export function git(repoPath, ...args) {
     return execFileSync("git", ["-C", repoPath, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      // Bounded like every other outbound call: a fetch against a dead remote
+      // must fail the one task, not wedge the whole poll.
+      timeout: 300_000,
     }).trim();
   } catch (err) {
     throw new Error(`git ${args[0]} failed: ${err.stderr?.toString().trim() || err.message}`);
@@ -102,8 +105,9 @@ export function ensureRepo({ reposRoot, repo, owner, timeoutMs = 300_000 }) {
 
 export function removeWorktree(repoPath, worktreePath) {
   // Fire-and-forget: deleting a worktree's node_modules takes minutes and must
-  // never delay result reporting. Leftovers from a crash are cleaned manually
-  // (`git worktree list` + `git worktree remove --force`).
+  // never delay result reporting. Only used when a run is cancelled — finished
+  // runs KEEP their worktree so the session can be resumed; pruneWorktrees
+  // reaps those (and crash leftovers) later.
   try {
     spawn("git", ["-C", repoPath, "worktree", "remove", "--force", worktreePath], {
       detached: true,
@@ -112,4 +116,43 @@ export function removeWorktree(repoPath, worktreePath) {
   } catch {
     // never mask the worker result
   }
+}
+
+/**
+ * Reap kept worktrees older than maxAgeDays (age = last write, so a worktree
+ * the user is still working in keeps renewing itself). Runs on watcher startup.
+ * Touches ONLY directories that are linked git worktrees (a `.git` FILE);
+ * anything else found under worktreesDir is left alone.
+ * @returns {number} how many were removed
+ */
+export function pruneWorktrees(worktreesDir, maxAgeDays) {
+  if (!fs.existsSync(worktreesDir)) return 0;
+  const cutoff = Date.now() - maxAgeDays * 86_400_000;
+  let pruned = 0;
+  for (const name of fs.readdirSync(worktreesDir)) {
+    const wt = path.join(worktreesDir, name);
+    let isStaleWorktree;
+    try {
+      isStaleWorktree =
+        fs.statSync(wt).isDirectory() &&
+        fs.statSync(wt).mtimeMs <= cutoff &&
+        fs.existsSync(path.join(wt, ".git")) &&
+        fs.statSync(path.join(wt, ".git")).isFile();
+    } catch {
+      continue; // vanished mid-scan
+    }
+    if (!isStaleWorktree) continue;
+    try {
+      // The worktree's .git file points back at the main repo — remove through
+      // it so git's worktree bookkeeping stays consistent.
+      const commonDir = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir");
+      git(path.dirname(commonDir), "worktree", "remove", "--force", wt);
+    } catch {
+      // main repo gone or git refused — the directory itself still has to go
+      fs.rmSync(wt, { recursive: true, force: true });
+    }
+    pruned += 1;
+    log(`pruned stale worktree ${name} (>${maxAgeDays}d old)`);
+  }
+  return pruned;
 }

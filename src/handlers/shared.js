@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { log } from "../log.js";
 
 // Every handler receives a ctx object:
@@ -19,6 +20,12 @@ export const trim = (text) =>
 export function threadTsOf(mention) {
   return mention.permalink?.match(/thread_ts=(\d+\.\d+)/)?.[1] ?? mention.ts;
 }
+
+/** Session id handed to `claude -p --session-id`, so the worker's run shows up in Claude Code and can be reopened. */
+export const newSessionId = () => crypto.randomUUID();
+
+/** Copy-paste command that reopens a worker's session interactively, in its kept worktree. */
+export const resumeHint = (worktreePath, sessionId) => `\`cd ${worktreePath} && claude --resume ${sessionId}\``;
 
 /**
  * While a worker runs, poll the self-DM for a "stop" reply and abort the

@@ -2,7 +2,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { waitForChecks, mergePr } from "../github.js";
 import { log } from "../log.js";
-import { minutes, trim, watchForStop } from "./shared.js";
+import { minutes, newSessionId, resumeHint, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -143,7 +143,9 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
     return { status: "worktree_failed", error: err.message };
   }
 
+  const sessionId = newSessionId();
   const startedAt = Date.now();
+  log(`[cwalert:${repo}] worker started (session ${sessionId})`);
   const heartbeat = setInterval(
     () => log(`[cwalert:${repo}] worker still running (${minutes(Date.now() - startedAt)} min elapsed)`),
     HEARTBEAT_MS,
@@ -152,6 +154,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
   const stopWatching = watchForStop({ slack }, dmChannel, `cwalert:${repo}`, controller);
 
   let result;
+  let discarded = false;
   try {
     result = await runClaude({
       bin: config.claudeBin,
@@ -162,9 +165,12 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       model: config.workerModel,
       label: `cwalert:${repo}`,
       signal: controller.signal,
+      sessionId,
     });
   } catch (err) {
     if (err instanceof CancelledError) {
+      discarded = true;
+      removeWorktree(repoPath, worktreePath);
       await slack.postToSelf(
         selfId,
         `:no_entry: *Stopped* the auto-fix worker for *${repo}* after ${minutes(Date.now() - startedAt)} min. Worktree discarded; if a branch/PR was pushed, close it manually.`,
@@ -175,7 +181,10 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
   } finally {
     stopWatching();
     clearInterval(heartbeat);
-    removeWorktree(repoPath, worktreePath);
+    // Any non-cancelled outcome keeps the worktree so the fix session can be resumed.
+    if (!discarded) {
+      log(`[cwalert:${repo}] worker finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+    }
   }
 
   const elapsedMin = minutes(Date.now() - startedAt);
@@ -191,11 +200,12 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       trim(
         `:information_source: *No auto-fix PR* for the ${originOf(event)} error in *${repo}* (${elapsedMin} min) — likely not a code bug (see below):\n` +
           `> ${event.sample}\nLogs: ${event.consoleUrl}` +
+          `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}` +
           (slackDraft ? `\n\n${slackDraft}` : "") +
           `\n\nWorker output:\n${result}`,
       ),
     );
-    return { status: "no_pr", prUrl };
+    return { status: "no_pr", prUrl, sessionId, worktreePath };
   }
 
   const merged = await settlePr({ prUrl, event, repo, confidence, tests, cfg });
@@ -203,11 +213,12 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
     selfId,
     trim(
       `${prHeader({ event, repo, prUrl, elapsedMin, merged })}\n> ${event.sample}\nLogs: ${event.consoleUrl}` +
+        `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}` +
         (slackDraft ? `\n\n${slackDraft}` : "") +
         `\n_root-cause confidence ${Number.isInteger(confidence) ? `${confidence}/10` : "not stated"} · tests: ${tests}_`,
     ),
   );
-  return { status: merged.merged ? "pr_merged" : "pr_opened", prUrl, merged };
+  return { status: merged.merged ? "pr_merged" : "pr_opened", prUrl, merged, sessionId, worktreePath };
 }
 
 /**

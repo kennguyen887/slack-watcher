@@ -60,7 +60,9 @@ export function loadConfig() {
     workerTimeoutMs: intOption(env.WORKER_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     workerGraceMs: intOption(env.WORKER_GRACE_MINUTES, 3, { min: 0 }) * 60_000,
     reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 30, { min: 1 }) * 60_000,
-    answerTimeoutMs: intOption(env.ANSWER_TIMEOUT_MINUTES, 10, { min: 1 }) * 60_000,
+    // Finished workers leave their worktree behind so the session can be resumed;
+    // pruneWorktrees reaps them on startup once older than this.
+    worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 3, { min: 1 }),
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
     // ── CloudWatch error → auto-fix source (off unless CWALERT_ENABLED) ──
     cwalert: {

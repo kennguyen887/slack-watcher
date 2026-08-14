@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { clonedRepoOwners, createWorktree, ensureRepo } from "../src/git.js";
+import { clonedRepoOwners, createWorktree, ensureRepo, pruneWorktrees } from "../src/git.js";
 
 const g = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 
@@ -52,6 +52,32 @@ test("createWorktree throws a clear error when the base branch does not exist on
     () => createWorktree(work, "repo", "1.0", path.join(root, "wt"), "does-not-exist"),
     /base branch origin\/does-not-exist not found/,
   );
+});
+
+// Worktrees are kept after a run so the worker's session stays resumable; the startup prune
+// must reap ONLY stale worktrees — deleting a fresh one kills a session the user may be in,
+// and deleting a non-worktree directory would be plain data loss.
+test("pruneWorktrees removes only old linked worktrees, never fresh ones or foreign dirs", () => {
+  const base = "rc";
+  const { root, work } = makeRemoteAndClone(base);
+  const worktreesDir = path.join(root, "worktrees");
+  fs.writeFileSync(path.join(work, "app.txt"), "v1");
+  g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", base);
+
+  const oldWt = createWorktree(work, "repo", "1.0", worktreesDir, base);
+  const freshWt = createWorktree(work, "repo", "2.0", worktreesDir, base);
+  const foreign = path.join(worktreesDir, "not-a-worktree");
+  fs.mkdirSync(foreign);
+  const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000);
+  fs.utimesSync(oldWt, tenDaysAgo, tenDaysAgo);
+  fs.utimesSync(foreign, tenDaysAgo, tenDaysAgo);
+
+  assert.equal(pruneWorktrees(worktreesDir, 3), 1);
+  assert.equal(fs.existsSync(oldWt), false, "stale worktree should be pruned");
+  assert.equal(fs.existsSync(freshWt), true, "fresh worktree must survive");
+  assert.equal(fs.existsSync(foreign), true, "non-worktree dirs must never be touched");
+  // git's own bookkeeping no longer lists the pruned tree
+  assert.doesNotMatch(g(work, "worktree", "list"), /repo-1-0/);
 });
 
 // ensureRepo clones a repo the team just created, so a review/fix request for it stops failing

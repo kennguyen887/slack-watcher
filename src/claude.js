@@ -19,9 +19,12 @@ export class CancelledError extends Error {
   }
 }
 
-export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal }) {
+export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal, sessionId }) {
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", ...extraArgs];
   if (model) args.push("--model", model);
+  // A caller-chosen session id makes the headless run resumable afterwards:
+  // `claude --resume <sessionId>` (from the same cwd) reopens it interactively.
+  if (sessionId) args.push("--session-id", sessionId);
 
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });

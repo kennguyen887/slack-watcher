@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { loadConfig } from "./config.js";
+import { pruneWorktrees } from "./git.js";
 import { listRepos } from "./repos.js";
 import { createSlackClient, formatConversationContext } from "./slack.js";
 import { loadState, saveState, mentionKey, appendHistory } from "./state.js";
@@ -116,6 +117,13 @@ async function main() {
   const once = process.argv.includes("--once");
   const config = loadConfig();
   fs.mkdirSync(config.logDir, { recursive: true });
+
+  // Worktrees outlive their worker so sessions stay resumable — reap old ones here.
+  try {
+    pruneWorktrees(config.worktreesDir, config.worktreeKeepDays);
+  } catch (err) {
+    log(`worktree prune failed: ${err.message}`);
+  }
 
   const slack = createSlackClient(config.slackToken);
   const { userId, userName, team } = await slack.whoAmI();

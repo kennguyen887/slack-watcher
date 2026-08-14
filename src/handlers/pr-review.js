@@ -3,7 +3,7 @@ import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { parsePrUrl } from "../github.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, detectLang, minutes, threadTsOf, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, threadTsOf, trim, watchForStop } from "./shared.js";
 
 function reviewPrompt({ mention, contextBlock }, pr, attachmentsBlock) {
   return `A teammate asked me to review a pull request. Review it and post inline comments under MY GitHub account.
@@ -100,9 +100,14 @@ export async function handlePrReview(ctx) {
     return { status: "worktree_failed", error: err.message };
   }
 
+  const sessionId = newSessionId();
   const startedAt = Date.now();
-  log(`[review:${pr.repo}] reviewing PR #${pr.number} (timeout ${minutes(config.reviewTimeoutMs)} min)`);
-  await slack.postToSelf(selfId, `:mag: *Reviewing now* — ${pr.url} (timeout ${minutes(config.reviewTimeoutMs)} min)`);
+  log(`[review:${pr.repo}] reviewing PR #${pr.number} (session ${sessionId}, timeout ${minutes(config.reviewTimeoutMs)} min)`);
+  await slack.postToSelf(
+    selfId,
+    `:mag: *Reviewing now* — ${pr.url} (timeout ${minutes(config.reviewTimeoutMs)} min)\n` +
+      `:technologist: Pick it up in Claude Code afterwards (any outcome): ${resumeHint(worktreePath, sessionId)}`,
+  );
 
   const { block: attachmentsBlock } = await prepareAttachments({
     files: mention.files,
@@ -115,6 +120,7 @@ export async function handlePrReview(ctx) {
   const stopWatching = watchForStop(ctx, dmChannel, `review:${pr.repo}`, controller);
 
   let result;
+  let discarded = false;
   try {
     result = await runClaude({
       bin: config.claudeBin,
@@ -125,9 +131,12 @@ export async function handlePrReview(ctx) {
       model: config.reviewModel,
       label: `review:${pr.repo}`,
       signal: controller.signal,
+      sessionId,
     });
   } catch (err) {
     if (err instanceof CancelledError) {
+      discarded = true;
+      removeWorktree(repoPath, worktreePath);
       await slack.postToSelf(
         selfId,
         `:no_entry: *Stopped* — killed the running review of ${pr.url} after ${minutes(Date.now() - startedAt)} min. If some comments were already posted, check the PR. ${mention.permalink ?? ""}`,
@@ -137,8 +146,11 @@ export async function handlePrReview(ctx) {
     throw err;
   } finally {
     stopWatching();
-    removeWorktree(repoPath, worktreePath);
-    log(`[review:${pr.repo}] finished after ${minutes(Date.now() - startedAt)} min, worktree removed`);
+    // Any non-cancelled outcome keeps the worktree — the review session can be
+    // reopened in Claude Code (e.g. to apply the findings right there).
+    if (!discarded) {
+      log(`[review:${pr.repo}] finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+    }
   }
 
   const outcome = reviewOutcome(result);
@@ -153,12 +165,14 @@ export async function handlePrReview(ctx) {
 
   await slack.postToSelf(
     selfId,
-    trim(dmForOutcome({ pr, result, outcome, repliedInThread })),
+    trim(dmForOutcome({ pr, result, outcome, repliedInThread }) + `\n:technologist: Continue in Claude Code: ${resumeHint(worktreePath, sessionId)}`),
   );
   return {
     status: outcome.reviewed ? "reviewed" : "skipped",
     comments: Number.isNaN(commentCount) ? null : commentCount,
     repliedInThread,
+    sessionId,
+    worktreePath,
   };
 }
 

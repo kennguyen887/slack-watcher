@@ -19,7 +19,8 @@ Built-in guardrails and quality-of-life:
 - **Sees attachments** — downloads screenshots and small log/text files from the message (where bug reports usually live) and feeds them to the worker; the classifier only sees a cheap text marker, so vision cost is paid once, by the worker, only when files exist.
 - **Grace window + kill switch** — DMs you "starting in N min, reply `stop` to cancel" before doing anything; replying `stop` also works **while the worker runs** (checked every 20 s) and kills the Claude session immediately, discarding the worktree.
 - **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs.
-- **Your working copy is sacred** — workers only ever touch throwaway worktrees; drafts only; nothing public without the grace gate.
+- **Your working copy is sacred** — workers only ever touch isolated worktrees under `worktrees/`; drafts only; nothing public without the grace gate.
+- **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run: the DM gives you `cd <worktree> && claude --resume <session-id>` to reopen the exact session in Claude Code and keep working. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 3) days of inactivity.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
 - **Manual send CLI** — fire off any message to a channel or DM in one command.
 
@@ -42,13 +43,12 @@ Built-in guardrails and quality-of-life:
    DRY_RUN=1 node src/index.js --once
    ```
    The first run sets the baseline to "now" — old mentions are never processed. Dry runs don't consume mentions.
-4. Install as a login daemon:
+4. Run it on a schedule — one-shot per tick, so a `git pull` deploys itself on the next run:
    ```bash
-   ./install.sh
-   tail -f logs/watcher.log
+   crontab -e
+   # */3 * * * * PATH=<dir of node+claude+gh>:/usr/bin:/bin /path/to/slack-watcher/cron-run.sh >> /path/to/slack-watcher/logs/watcher.log 2>&1
    ```
-
-Uninstall: `./uninstall.sh`
+   Or install the always-on macOS login daemon instead: `./install.sh` (uninstall: `./uninstall.sh`).
 
 ## How it works
 
@@ -71,7 +71,7 @@ poll (45s) ──► search.messages: mentions of you  ──┐
 
 Safety properties:
 
-- **Your working copy is never touched** — workers run in throwaway `git worktree`s under `worktrees/`, removed in the background afterwards.
+- **Your working copy is never touched** — workers run in isolated `git worktree`s under `worktrees/`, kept for `WORKTREE_KEEP_DAYS` days (so their sessions stay resumable), then pruned automatically on startup.
 - **Nothing public without a gate** — PRs are drafts; the only public actions (review comments + the "added comments" thread reply) sit behind the grace window ("reply `stop` to cancel").
 - **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own or already-reviewed PRs.
 - **Audit trail** — every processed message is appended to `history.jsonl`; live worker progress streams to `logs/watcher.log`.
