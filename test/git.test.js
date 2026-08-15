@@ -77,7 +77,7 @@ test("pruneWorktrees removes only old linked worktrees, never fresh ones or fore
   assert.equal(fs.existsSync(freshWt), true, "fresh worktree must survive");
   assert.equal(fs.existsSync(foreign), true, "non-worktree dirs must never be touched");
   // git's own bookkeeping no longer lists the pruned tree
-  assert.doesNotMatch(g(work, "worktree", "list"), /repo-1-0/);
+  assert.doesNotMatch(g(work, "worktree", "list"), /auto-repo-1-0/);
 });
 
 // ensureRepo clones a repo the team just created, so a review/fix request for it stops failing

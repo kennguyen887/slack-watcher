@@ -24,7 +24,10 @@ export function git(repoPath, ...args) {
  * checked out at the latest origin/<baseBranch> instead.
  */
 export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch) {
-  const worktreePath = path.join(worktreesDir, `${repoName}-${ts.replace(".", "-")}`);
+  // "auto-" marks the session as watcher-spawned in the Claude desktop app's
+  // session list: imported CLI sessions have no title (the app exposes no way
+  // to set one from outside), so the list shows this directory name instead.
+  const worktreePath = path.join(worktreesDir, `auto-${repoName}-${ts.replace(".", "-")}`);
   // Pull the latest for ALL branches (+prune deleted remotes) so the fix always starts from
   // the CURRENT tip of the base branch (RC/master). We check the worktree out DETACHED at
   // origin/<base> — never a local branch — so a stale local RC/master can't leak in.
