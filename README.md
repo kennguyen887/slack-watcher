@@ -43,12 +43,14 @@ Built-in guardrails and quality-of-life:
    DRY_RUN=1 node src/index.js --once
    ```
    The first run sets the baseline to "now" — old mentions are never processed. Dry runs don't consume mentions.
-4. Run it on a schedule — one-shot per tick, so a `git pull` deploys itself on the next run:
+4. Install as a login agent — one poll per tick, so a `git pull` deploys itself on the next run:
    ```bash
-   crontab -e
-   # */3 * * * * PATH=<dir of node+claude+gh>:/usr/bin:/bin /path/to/slack-watcher/cron-run.sh >> /path/to/slack-watcher/logs/watcher.log 2>&1
+   ./install.sh
+   tail -f logs/watcher.log
    ```
-   Or install the always-on macOS login daemon instead: `./install.sh` (uninstall: `./uninstall.sh`).
+   Uninstall: `./uninstall.sh`.
+
+   > **macOS: use the LaunchAgent, not `crontab`.** The worker's `claude` CLI reads its OAuth token from the login Keychain, which only your GUI login session can unlock. A crontab entry runs outside that session, so every worker fails with `Failed to authenticate: OAuth session expired` even though `claude` works fine in your terminal. `install.sh` installs a `gui/<uid>` LaunchAgent that runs `cron-run.sh` every 180s — same one-shot model, but with Keychain access.
 
 ## How it works
 

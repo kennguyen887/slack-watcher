@@ -4,10 +4,16 @@
 <dict>
     <key>Label</key>
     <string>com.slack-watcher</string>
+    <!-- One poll per interval via cron-run.sh (which carries the overlap guard),
+         NOT a KeepAlive daemon: each run loads the latest code, so a `git pull`
+         deploys itself on the next tick with no restart. MUST run as a gui/<uid>
+         LaunchAgent (not crontab): the `claude` CLI reads its OAuth token from the
+         login Keychain, which only the GUI session can unlock — a crontab entry
+         authenticates as "OAuth session expired". -->
     <key>ProgramArguments</key>
     <array>
-        <string>__NODE_BIN__</string>
-        <string>__WATCHER_DIR__/src/index.js</string>
+        <string>/bin/sh</string>
+        <string>__WATCHER_DIR__/cron-run.sh</string>
     </array>
     <key>WorkingDirectory</key>
     <string>__WATCHER_DIR__</string>
@@ -20,10 +26,8 @@
     </dict>
     <key>RunAtLoad</key>
     <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <key>StartInterval</key>
+    <integer>180</integer>
     <key>StandardOutPath</key>
     <string>__WATCHER_DIR__/logs/watcher.log</string>
     <key>StandardErrorPath</key>

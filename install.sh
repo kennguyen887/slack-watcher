@@ -22,13 +22,15 @@ if [[ -z "$CLAUDE_BIN" ]]; then
   echo "WARNING: claude CLI not found on PATH — the watcher needs it at runtime." >&2
 fi
 
+# The watcher MUST run as a gui/<uid> LaunchAgent, never crontab: the claude CLI
+# reads its OAuth token from the login Keychain, which only the GUI session unlocks.
 # launchd does not inherit your shell PATH; bake in the dirs node/claude/gh/git live in.
 AGENT_PATH="$(dirname "$NODE_BIN"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$WATCHER_DIR/logs"
 
+chmod +x "$WATCHER_DIR/cron-run.sh"
 sed \
-  -e "s|__NODE_BIN__|$NODE_BIN|g" \
   -e "s|__WATCHER_DIR__|$WATCHER_DIR|g" \
   -e "s|__PATH__|$AGENT_PATH|g" \
   -e "s|__HOME__|$HOME|g" \
