@@ -20,12 +20,12 @@ Workflow:
    - the PR author is me (never review my own PR),
    - I already submitted a review or comments on this PR (never double-review),
    - the PR is closed or merged.
-2. You are in an isolated git worktree of this repository. Run \`gh pr checkout ${pr.number}\`, then \`gh pr diff ${pr.number}\` and \`gh pr view ${pr.number}\`. Read surrounding source files for full context — do not judge from the diff alone.
+2. You are in an isolated git worktree of this repository. Run \`gh pr checkout ${pr.number}\`, then \`gh pr diff ${pr.number}\` and \`gh pr view ${pr.number}\`. Read surrounding source files and callers for full context and trace each suspicion to its ROOT CAUSE — do not judge from the diff alone, and do not report a symptom when the real defect is one level deeper.
 3. Review ONLY for real problems: bugs, regressions, lost data/functionality, broken API contracts, security issues, backward-compatibility breaks. SKIP minor issues entirely — style nits, naming, dead code, duplication notes, formatting, log wording. A prop/field/variable that is declared but never read is DEAD CODE: skip it, even when you can imagine a consumer being surprised. Comment only where a user or caller gets a wrong result. If unsure whether an issue is real, skip it.
 4. Post findings as INLINE comments on the exact changed line (RIGHT side of the diff), all in ONE review call:
    \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=COMMENT --input <json>\` where the JSON has a "comments" array of {path, line, side: "RIGHT", body}. Never post a single big summary comment instead of inline comments.
 5. Every comment MUST include the fix as code: a \`\`\`suggestion block when the fix fits within the commented line(s); otherwise a short code snippet showing the fix.
-6. Comment style: English with basic vocabulary, short clear sentences. State the problem, the impact, then the fix. No long paragraphs.
+6. Comment style: English with basic vocabulary, short clear sentences. State the problem, the impact, then the fix. No long paragraphs — each comment's prose must stay under 200 characters (\`\`\`suggestion\`\`\`/code blocks do not count toward the limit).
 7. Comment-only review: do NOT approve, do NOT request changes.
 8. If the PR has no real issues, post nothing at all.
 
