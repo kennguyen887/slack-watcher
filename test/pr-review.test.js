@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { reviewOutcome, buildThreadReply } from "../src/handlers/pr-review.js";
+import { reviewOutcome, buildThreadReply, runPool } from "../src/handlers/pr-review.js";
 import { parseAllPrUrls } from "../src/github.js";
 
 const report = (lines) => `some worker chatter\n${lines}`;
@@ -46,6 +46,25 @@ test("parseAllPrUrls returns every distinct PR in a multi-PR message, deduped", 
   assert.equal(prs[0].owner, "Org");
   assert.equal(prs[0].repo, "repo");
   assert.equal(parseAllPrUrls("no pr links here").length, 0);
+});
+
+test("runPool caps concurrency and preserves input order", async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const order = [];
+  const items = [0, 1, 2, 3, 4, 5, 6];
+  const out = await runPool(items, 3, async (n) => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    order.push(n);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight -= 1;
+    return n * 10;
+  });
+  assert.deepEqual(out, [0, 10, 20, 30, 40, 50, 60]); // order preserved despite parallelism
+  assert.ok(peak <= 3, `peak concurrency ${peak} must be <= 3`);
+  assert.ok(peak > 1, "should actually run in parallel");
+  assert.equal(order.length, 7); // every item ran exactly once
 });
 
 test("buildThreadReply: one PR keeps prose, several become a per-PR list, none → null", () => {

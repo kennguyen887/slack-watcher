@@ -60,6 +60,9 @@ export function loadConfig() {
     workerTimeoutMs: intOption(env.WORKER_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     workerGraceMs: intOption(env.WORKER_GRACE_MINUTES, 3, { min: 0 }) * 60_000,
     reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 30, { min: 1 }) * 60_000,
+    // How many PRs from ONE multi-PR review message to review at once. The git worktree
+    // setup is serialized regardless; this caps the concurrent claude review workers.
+    reviewConcurrency: intOption(env.REVIEW_CONCURRENCY, 3, { min: 1, max: 6 }),
     // Finished workers leave their worktree behind so the session can be resumed;
     // pruneWorktrees reaps them on startup once older than this.
     worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 3, { min: 1 }),

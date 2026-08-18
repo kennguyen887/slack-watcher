@@ -93,18 +93,19 @@ export async function handlePrReview(ctx) {
     return { status: "cancelled_by_user" };
   }
 
-  // A "stop" reply aborts the current review AND every PR still queued after it.
+  // A "stop" reply aborts the running reviews AND every PR still queued after them.
   const controller = new AbortController();
   const stopWatching = watchForStop(ctx, dmChannel, "review", controller);
-  const results = [];
+  // Review workers run in parallel (cap), but git setup is serialized: several `git fetch` /
+  // `worktree add` on the SAME repo at once race on git's lock files.
+  const gitMutex = makeMutex();
+  let results;
   try {
-    for (const pr of prs) {
-      if (controller.signal.aborted) {
-        results.push({ pr, status: "cancelled" });
-        continue;
-      }
-      results.push(await reviewOnePr({ ctx, pr, controller }));
-    }
+    results = await runPool(prs, config.reviewConcurrency, (pr) =>
+      controller.signal.aborted
+        ? { pr, status: "cancelled" }
+        : reviewOnePr({ ctx, pr, controller, gitMutex }),
+    );
   } finally {
     stopWatching();
   }
@@ -137,13 +138,14 @@ export async function handlePrReview(ctx) {
  * into the batch summary. Only a truly unexpected error propagates.
  * @returns {Promise<{ pr, status: "reviewed"|"skipped"|"unparseable"|"cancelled"|"repo_missing"|"worktree_failed", outcome?, result?, worktreePath?, sessionId? }>}
  */
-async function reviewOnePr({ ctx, pr, controller }) {
+async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   const { mention, config, slack, selfId } = ctx;
   const label = `review:${pr.repo}#${pr.number}`;
 
   let repoPath;
   try {
-    ({ repoPath } = ensureRepo({ reposRoot: config.reposRoot, repo: pr.repo, owner: pr.owner }));
+    // Serialized: a clone/fetch racing another on the same repo trips git's lock files.
+    ({ repoPath } = await gitMutex(() => ensureRepo({ reposRoot: config.reposRoot, repo: pr.repo, owner: pr.owner })));
   } catch (err) {
     log(`[${label}] no local checkout: ${err.message}`);
     await slack.postToSelf(selfId, `:warning: Can't review ${pr.url} — no local checkout of *${pr.repo}*: ${err.message}`);
@@ -153,8 +155,10 @@ async function reviewOnePr({ ctx, pr, controller }) {
   let worktreePath;
   try {
     // Suffix the PR number: several PRs from one message share mention.ts and would otherwise
-    // collide on the same worktree path.
-    worktreePath = createWorktree(repoPath, pr.repo, `${mention.ts}-pr${pr.number}`, config.worktreesDir, config.baseBranch);
+    // collide on the same worktree path. Serialized via gitMutex (fetch + worktree add).
+    worktreePath = await gitMutex(() =>
+      createWorktree(repoPath, pr.repo, `${mention.ts}-pr${pr.number}`, config.worktreesDir, config.baseBranch),
+    );
   } catch (err) {
     await slack.postToSelf(selfId, `:x: Could not prepare a worktree for reviewing ${pr.url}: ${err.message}`);
     return { pr, status: "worktree_failed", error: err.message };
@@ -213,6 +217,42 @@ async function reviewOnePr({ ctx, pr, controller }) {
   const status = !outcome.reviewed ? "skipped" : Number.isNaN(outcome.commentCount) ? "unparseable" : "reviewed";
   log(`[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} comment(s))` : ""}`);
   return { pr, status, outcome, result, worktreePath, sessionId };
+}
+
+/**
+ * A promise chain that runs the functions handed to it one at a time, in call order — a mutex.
+ * Used to serialize git worktree setup across parallel reviews. A rejection in one job does not
+ * break the chain for the next.
+ */
+function makeMutex() {
+  let chain = Promise.resolve();
+  return (fn) => {
+    const run = chain.then(fn, fn);
+    chain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  };
+}
+
+/**
+ * Run `worker(item, i)` over items with at most `limit` in flight, preserving input order in the
+ * returned results array. A worker that throws rejects the whole pool — callers keep worker
+ * failures internal (reviewOnePr returns a status object, never throws for expected failures).
+ */
+export async function runPool(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const runner = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length || 1) }, runner));
+  return results;
 }
 
 /** The single thread reply for a batch. One PR keeps the original wording; several get a list. */
