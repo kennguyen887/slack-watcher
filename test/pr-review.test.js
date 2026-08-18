@@ -5,7 +5,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { reviewOutcome } from "../src/handlers/pr-review.js";
+import { reviewOutcome, buildThreadReply } from "../src/handlers/pr-review.js";
+import { parseAllPrUrls } from "../src/github.js";
 
 const report = (lines) => `some worker chatter\n${lines}`;
 
@@ -34,4 +35,34 @@ test("reviewOutcome replies in the thread only when the diff was actually review
   // A worker that ignored the contract must not get a thread reply either.
   assert.equal(reviewOutcome("no markers at all").threadReply, null);
   assert.equal(reviewOutcome(report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: oops")).threadReply, null);
+});
+
+test("parseAllPrUrls returns every distinct PR in a multi-PR message, deduped", () => {
+  const text =
+    "PRs for review:\n<https://github.com/Org/repo/pull/2250|a>\n<https://github.com/Org/repo/pull/2249|b>\n" +
+    "https://github.com/Org/repo/pull/2246\nand again https://github.com/Org/repo/pull/2250";
+  const prs = parseAllPrUrls(text);
+  assert.deepEqual(prs.map((p) => p.number), ["2250", "2249", "2246"]); // first-seen order, 2250 once
+  assert.equal(prs[0].owner, "Org");
+  assert.equal(prs[0].repo, "repo");
+  assert.equal(parseAllPrUrls("no pr links here").length, 0);
+});
+
+test("buildThreadReply: one PR keeps prose, several become a per-PR list, none → null", () => {
+  assert.equal(buildThreadReply([]), null);
+
+  // Single reviewed PR keeps the exact single-PR wording (from reviewOutcome.threadReply).
+  const one = [{ pr: { number: "10" }, outcome: { commentCount: 2, threadReply: "Reviewed — left 2 comments on the PR." } }];
+  assert.equal(buildThreadReply(one), "Reviewed — left 2 comments on the PR.");
+
+  // Several PRs → one list, each line stating its own count / LGTM (singular grammar respected).
+  const many = [
+    { pr: { number: "2250" }, outcome: { commentCount: 3 } },
+    { pr: { number: "2249" }, outcome: { commentCount: 0 } },
+    { pr: { number: "2246" }, outcome: { commentCount: 1 } },
+  ];
+  assert.equal(
+    buildThreadReply(many),
+    "Reviewed 3 PRs:\n• #2250 — 3 comments\n• #2249 — LGTM\n• #2246 — 1 comment",
+  );
 });

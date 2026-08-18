@@ -66,67 +66,115 @@ export function reviewOutcome(result) {
 
 export async function handlePrReview(ctx) {
   const { mention, classification, contextBlock, config, slack, selfId } = ctx;
-  const pr = parsePrUrl(classification.prUrl) ?? parsePrUrl(mention.text + contextBlock);
-  if (!pr) {
+  // One Slack message often lists several PRs — review EVERY one, not just the first.
+  const prs = parseAllPrUrls(`${classification.prUrl ?? ""}\n${mention.text ?? ""}\n${contextBlock}`);
+  if (!prs.length) {
     await slack.postToSelf(
       selfId,
       `:warning: Review request detected but no GitHub PR link found.\n> ${classification.summary}\n${mention.permalink ?? ""}\nHandle it manually.`,
     );
     return { status: "no_pr_url" };
   }
+
+  const many = prs.length > 1;
+  const dmChannel = await slack.postToSelf(
+    selfId,
+    `:mag: *PR review picked up* — from @${mention.username ?? mention.user}\n` +
+      prs.map((p) => `> ${p.url}`).join("\n") +
+      "\n" +
+      (config.workerGraceMs > 0
+        ? `• *Starting in ${minutes(config.workerGraceMs)} min* — reply \`stop\` here to cancel, before OR while it runs (comments posted under YOUR GitHub account; I'll reply in the Slack thread when done)\n`
+        : "") +
+      (many ? `• ${prs.length} PRs — reviewed one by one, with a single thread reply at the end\n` : "") +
+      `Original: ${mention.permalink ?? "n/a"}`,
+  );
+
+  if (await cancelledDuringGrace(ctx, dmChannel, "review")) {
+    return { status: "cancelled_by_user" };
+  }
+
+  // A "stop" reply aborts the current review AND every PR still queued after it.
+  const controller = new AbortController();
+  const stopWatching = watchForStop(ctx, dmChannel, "review", controller);
+  const results = [];
+  try {
+    for (const pr of prs) {
+      if (controller.signal.aborted) {
+        results.push({ pr, status: "cancelled" });
+        continue;
+      }
+      results.push(await reviewOnePr({ ctx, pr, controller }));
+    }
+  } finally {
+    stopWatching();
+  }
+
+  // One thread reply, covering only the PRs actually reviewed (a pre-check bail or a crash
+  // must never read as "reviewed" to the team — those stay in the self-DM).
+  const reviewed = results.filter((r) => r.status === "reviewed");
+  const threadReply = buildThreadReply(reviewed);
+  let repliedInThread = false;
+  if (threadReply && mention.channel?.id) {
+    await slack.replyInThread(mention.channel.id, threadTsOf(mention), threadReply);
+    repliedInThread = true;
+  }
+
+  await slack.postToSelf(selfId, trim(buildSummaryDm({ results, mention, repliedInThread })));
+  return {
+    status: reviewed.length ? "reviewed" : (results[0]?.status ?? "skipped"),
+    prs: results.map((r) => ({
+      url: r.pr.url,
+      status: r.status,
+      comments: r.outcome && !Number.isNaN(r.outcome.commentCount) ? r.outcome.commentCount : null,
+    })),
+    repliedInThread,
+  };
+}
+
+/**
+ * Review a single PR in its own isolated worktree + session. Never throws for an expected
+ * failure (missing checkout, worktree error, user stop) — returns a status the caller folds
+ * into the batch summary. Only a truly unexpected error propagates.
+ * @returns {Promise<{ pr, status: "reviewed"|"skipped"|"unparseable"|"cancelled"|"repo_missing"|"worktree_failed", outcome?, result?, worktreePath?, sessionId? }>}
+ */
+async function reviewOnePr({ ctx, pr, controller }) {
+  const { mention, config, slack, selfId } = ctx;
+  const label = `review:${pr.repo}#${pr.number}`;
+
   let repoPath;
   try {
     ({ repoPath } = ensureRepo({ reposRoot: config.reposRoot, repo: pr.repo, owner: pr.owner }));
   } catch (err) {
-    log(`[review:${pr.repo}] no local checkout: ${err.message}`);
-    await slack.postToSelf(
-      selfId,
-      `:warning: Can't review ${pr.url} — no local checkout of *${pr.repo}*: ${err.message}\nOriginal: ${mention.permalink ?? "n/a"}`,
-    );
-    return { status: "repo_missing", error: err.message };
-  }
-
-  const dmChannel = await slack.postToSelf(
-    selfId,
-    `:mag: *PR review picked up* — from @${mention.username ?? mention.user}\n` +
-      `> ${pr.url}\n` +
-      (config.workerGraceMs > 0
-        ? `• *Starting in ${minutes(config.workerGraceMs)} min* — reply \`stop\` here to cancel, before OR while it runs (review comments will be posted under YOUR GitHub account, and I'll reply in the Slack thread when done)\n`
-        : "") +
-      `Original: ${mention.permalink ?? "n/a"}`,
-  );
-
-  if (await cancelledDuringGrace(ctx, dmChannel, `review:${pr.repo}`)) {
-    return { status: "cancelled_by_user" };
+    log(`[${label}] no local checkout: ${err.message}`);
+    await slack.postToSelf(selfId, `:warning: Can't review ${pr.url} — no local checkout of *${pr.repo}*: ${err.message}`);
+    return { pr, status: "repo_missing", error: err.message };
   }
 
   let worktreePath;
   try {
-    log(`[review:${pr.repo}] preparing isolated worktree...`);
-    worktreePath = createWorktree(repoPath, pr.repo, mention.ts, config.worktreesDir, config.baseBranch);
+    // Suffix the PR number: several PRs from one message share mention.ts and would otherwise
+    // collide on the same worktree path.
+    worktreePath = createWorktree(repoPath, pr.repo, `${mention.ts}-pr${pr.number}`, config.worktreesDir, config.baseBranch);
   } catch (err) {
     await slack.postToSelf(selfId, `:x: Could not prepare a worktree for reviewing ${pr.url}: ${err.message}`);
-    return { status: "worktree_failed", error: err.message };
+    return { pr, status: "worktree_failed", error: err.message };
   }
 
   const sessionId = newSessionId();
   const startedAt = Date.now();
-  log(`[review:${pr.repo}] reviewing PR #${pr.number} (session ${sessionId}, timeout ${minutes(config.reviewTimeoutMs)} min)`);
+  log(`[${label}] reviewing PR #${pr.number} (session ${sessionId}, timeout ${minutes(config.reviewTimeoutMs)} min)`);
   await slack.postToSelf(
     selfId,
     `:mag: *Reviewing now* — ${pr.url} (timeout ${minutes(config.reviewTimeoutMs)} min)\n` +
-      `:technologist: Pick it up in Claude Code afterwards (any outcome): ${resumeHint(worktreePath, sessionId)}`,
+      `:technologist: ${resumeHint(worktreePath, sessionId)}`,
   );
 
   const { block: attachmentsBlock } = await prepareAttachments({
     files: mention.files,
     token: config.slackToken,
     destDir: worktreePath,
-    label: `review:${pr.repo}`,
+    label,
   });
-
-  const controller = new AbortController();
-  const stopWatching = watchForStop(ctx, dmChannel, `review:${pr.repo}`, controller);
 
   let result;
   let discarded = false;
@@ -138,7 +186,7 @@ export async function handlePrReview(ctx) {
       timeoutMs: config.reviewTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.reviewModel,
-      label: `review:${pr.repo}`,
+      label,
       signal: controller.signal,
       sessionId,
     });
@@ -148,61 +196,63 @@ export async function handlePrReview(ctx) {
       removeWorktree(repoPath, worktreePath);
       await slack.postToSelf(
         selfId,
-        `:no_entry: *Stopped* — killed the running review of ${pr.url} after ${minutes(Date.now() - startedAt)} min. If some comments were already posted, check the PR. ${mention.permalink ?? ""}`,
+        `:no_entry: *Stopped* — killed the review of ${pr.url} after ${minutes(Date.now() - startedAt)} min. If some comments were already posted, check the PR.`,
       );
-      return { status: "cancelled_mid_task" };
+      return { pr, status: "cancelled" };
     }
     throw err;
   } finally {
-    stopWatching();
-    // Any non-cancelled outcome keeps the worktree — the review session can be
-    // reopened in Claude Code (e.g. to apply the findings right there).
+    // Any non-cancelled outcome keeps the worktree — the session stays resumable in Claude Code.
     if (!discarded) {
-      log(`[review:${pr.repo}] finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      log(`[${label}] finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
       showInDesktopApp(sessionId);
     }
   }
 
   const outcome = reviewOutcome(result);
-  const { commentCount, threadReply } = outcome;
-  log(`[review:${pr.repo}] result: ${threadReply === null ? "no thread reply, " : ""}${Number.isNaN(commentCount) ? "unparseable" : `${commentCount} comment(s)`}`);
-
-  let repliedInThread = false;
-  if (threadReply !== null && mention.channel?.id) {
-    await slack.replyInThread(mention.channel.id, threadTsOf(mention), threadReply);
-    repliedInThread = true;
-  }
-
-  await slack.postToSelf(
-    selfId,
-    trim(dmForOutcome({ pr, result, outcome, repliedInThread }) + `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(worktreePath, sessionId)}`),
-  );
-  return {
-    status: outcome.reviewed ? "reviewed" : "skipped",
-    comments: Number.isNaN(commentCount) ? null : commentCount,
-    repliedInThread,
-    sessionId,
-    worktreePath,
-  };
+  const status = !outcome.reviewed ? "skipped" : Number.isNaN(outcome.commentCount) ? "unparseable" : "reviewed";
+  log(`[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} comment(s))` : ""}`);
+  return { pr, status, outcome, result, worktreePath, sessionId };
 }
 
-/** Self-DM wording per outcome — a skipped review must never read like a completed one. */
-function dmForOutcome({ pr, result, outcome, repliedInThread }) {
-  const { commentCount, reviewed, slackReply } = outcome;
-  if (Number.isNaN(commentCount)) {
-    return `:warning: PR review finished but I couldn't parse the result for ${pr.url} — check the PR manually.\n\nWorker output:\n${result}`;
-  }
-  if (!reviewed) {
-    return `:information_source: *Review skipped* — ${pr.url} was not reviewed${slackReply ? `: ${slackReply}` : " (pre-check stopped it: my own PR, already reviewed, or closed/merged)"}\nNothing posted on the PR or in the Slack thread.`;
-  }
-  if (commentCount > 0) {
-    return (
-      `:white_check_mark: *PR review done* — posted ${commentCount} inline comment(s) on ${pr.url}` +
-      (repliedInThread ? `\nReplied in the Slack thread.` : "\n:warning: Could not reply in the Slack thread — do it manually.")
-    );
-  }
+/** The single thread reply for a batch. One PR keeps the original wording; several get a list. */
+export function buildThreadReply(reviewed) {
+  if (!reviewed.length) return null;
+  if (reviewed.length === 1) return reviewed[0].outcome.threadReply;
+  const lines = reviewed.map((r) => {
+    const c = r.outcome.commentCount;
+    return `• #${r.pr.number} — ${c > 0 ? `${c} comment${c === 1 ? "" : "s"}` : "LGTM"}`;
+  });
+  return `Reviewed ${reviewed.length} PRs:\n${lines.join("\n")}`;
+}
+
+/** Self-DM: one line per PR with its real outcome — a skipped/failed one must never read as reviewed. */
+function buildSummaryDm({ results, mention, repliedInThread }) {
+  const line = (r) => {
+    const c = r.outcome?.commentCount;
+    switch (r.status) {
+      case "reviewed":
+        return `:white_check_mark: ${r.pr.url} — ${c > 0 ? `${c} inline comment${c === 1 ? "" : "s"}` : "no issues (LGTM)"}`;
+      case "skipped":
+        return `:information_source: ${r.pr.url} — skipped${r.outcome?.slackReply ? `: ${r.outcome.slackReply}` : " (pre-check: my own PR, already reviewed, or closed/merged)"}`;
+      case "unparseable":
+        return `:warning: ${r.pr.url} — couldn't parse the worker result, check the PR manually`;
+      case "cancelled":
+        return `:no_entry: ${r.pr.url} — stopped`;
+      case "repo_missing":
+        return `:warning: ${r.pr.url} — no local checkout of that repo`;
+      case "worktree_failed":
+        return `:x: ${r.pr.url} — worktree failed`;
+      default:
+        return `:grey_question: ${r.pr.url} — ${r.status}`;
+    }
+  };
+  const header = results.length > 1 ? `*PR review done — ${results.length} PRs*` : `*PR review done*`;
   return (
-    `:white_check_mark: *PR review done* — no real issues found on ${pr.url}.` +
-    (repliedInThread ? ` Replied *LGTM!* in the Slack thread.` : ` (couldn't reply in the thread — do it manually.)`)
+    `${header}\n${results.map(line).join("\n")}\n` +
+    (repliedInThread
+      ? `Replied in the Slack thread.`
+      : `:information_source: No thread reply (nothing was actually reviewed).`) +
+    `\nOriginal: ${mention.permalink ?? "n/a"}`
   );
 }

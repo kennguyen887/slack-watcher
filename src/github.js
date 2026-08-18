@@ -8,6 +8,23 @@ export function parsePrUrl(text) {
   return m ? { url: m[0], owner: m[1], repo: m[2], number: m[3] } : null;
 }
 
+/**
+ * EVERY distinct GitHub PR link in a text blob, in first-seen order. One Slack message often
+ * lists several PRs to review ("PRs for review: <a> <b> <c>"); reviewing only the first drops the
+ * rest silently. Deduped by url so a link repeated in message + context is reviewed once.
+ */
+export function parseAllPrUrls(text) {
+  const re = new RegExp(PR_URL_RE, "g");
+  const seen = new Set();
+  const prs = [];
+  for (const m of (text ?? "").matchAll(re)) {
+    if (seen.has(m[0])) continue;
+    seen.add(m[0]);
+    prs.push({ url: m[0], owner: m[1], repo: m[2], number: m[3] });
+  }
+  return prs;
+}
+
 /** Run gh with an explicit timeout — an unbounded CLI call would stall the daemon's poll loop. */
 function gh(args, timeoutMs = 60_000) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs }).trim();
