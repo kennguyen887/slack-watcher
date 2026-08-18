@@ -10,7 +10,8 @@ const HEARTBEAT_MS = 5 * 60_000;
 
 function workerPrompt({ mention, classification, contextBlock, config }, branchName, attachmentsBlock) {
   const base = config.baseBranch;
-  return `A teammate asked for a code change on Slack. Implement it and open a draft PR.
+  // The first line becomes the session's title in the Claude desktop app, so lead with "[slack]".
+  return `[slack] Code request — ${classification.repo}. A teammate asked for a code change on Slack; implement it and open a draft PR.
 
 Slack message (from @${mention.username ?? mention.user} in #${mention.channel?.name ?? "?"}):
 """

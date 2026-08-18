@@ -37,7 +37,8 @@ function eventContext(event) {
 function fixPrompt(event, branchName, base, draft) {
   const prCmd = `gh pr create --base ${base}${draft ? " --draft" : ""}`;
   const origin = originOf(event);
-  return `A production error was detected in ${origin} and needs a code fix. Investigate the ROOT CAUSE and open a pull request.
+  // The first line becomes the session's title in the Claude desktop app, so lead with "[slack]".
+  return `[slack] Auto-fix ${event.service} (${event.severity}) — a production error was detected in ${origin} and needs a code fix. Investigate the ROOT CAUSE and open a pull request.
 
 ${origin} error:
 """

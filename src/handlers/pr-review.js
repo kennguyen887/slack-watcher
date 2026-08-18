@@ -6,7 +6,9 @@ import { log } from "../log.js";
 import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
 
 function reviewPrompt({ mention, contextBlock }, pr, attachmentsBlock) {
-  return `A teammate asked me to review a pull request. Review it and post inline comments under MY GitHub account.
+  // The first line becomes the session's title in the Claude desktop app (it copies the opening
+  // line of an imported CLI session verbatim), so lead with a "[slack]" tag + what/where.
+  return `[slack] Review PR #${pr.number} — ${pr.repo}. A teammate asked me to review this pull request and post inline comments under MY GitHub account.
 
 PR: ${pr.url} (repo ${pr.owner}/${pr.repo}, PR #${pr.number})
 
