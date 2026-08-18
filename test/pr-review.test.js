@@ -19,11 +19,17 @@ test("reviewOutcome replies in the thread only when the diff was actually review
   const clean = reviewOutcome(report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: 0\nSLACK_REPLY: Looks good."));
   assert.equal(clean.threadReply, "LGTM!");
 
+  // The thread reply states the COUNT from commentCount, not the worker's free-text SLACK_REPLY
+  // (the team wants the number at a glance).
   const commented = reviewOutcome(
     report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: 3\nSLACK_REPLY: Mình đã comment vài chỗ trên PR."),
   );
-  assert.equal(commented.threadReply, "Mình đã comment vài chỗ trên PR.");
+  assert.equal(commented.threadReply, "Reviewed — left 3 comments on the PR.");
   assert.equal(commented.commentCount, 3);
+
+  // Singular grammar for a single comment.
+  const one = reviewOutcome(report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: 1\nSLACK_REPLY: x"));
+  assert.equal(one.threadReply, "Reviewed — left 1 comment on the PR.");
 
   // A worker that ignored the contract must not get a thread reply either.
   assert.equal(reviewOutcome("no markers at all").threadReply, null);

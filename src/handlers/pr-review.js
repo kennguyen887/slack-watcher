@@ -42,6 +42,10 @@ SLACK_REPLY: <one short sentence in ${detectLang(mention.text) === "vi" ? "Vietn
  * one I already reviewed, one already closed/merged — reports 0 comments just like a clean review
  * does, and answering "LGTM!" to that tells the team a PR was reviewed when nobody read it. Those
  * cases stay a self-DM. An unparseable result also gets no reply.
+ *
+ * The thread reply always states the OUTCOME COUNT — "reviewed, N comment(s)" or "LGTM!" — built
+ * from commentCount, not from the worker's free-text SLACK_REPLY (which often omits the number the
+ * team wants to see at a glance).
  * @returns {{ commentCount: number, reviewed: boolean, slackReply: string, threadReply: string|null }}
  */
 export function reviewOutcome(result) {
@@ -50,7 +54,10 @@ export function reviewOutcome(result) {
   const slackReply = result.match(/SLACK_REPLY:\s*([\s\S]+)$/m)?.[1]?.trim() ?? "";
   let threadReply = null;
   if (reviewed && !Number.isNaN(commentCount)) {
-    threadReply = commentCount > 0 ? slackReply || "I added some review comments on the PR." : "LGTM!";
+    threadReply =
+      commentCount > 0
+        ? `Reviewed — left ${commentCount} comment${commentCount === 1 ? "" : "s"} on the PR.`
+        : "LGTM!";
   }
   return { commentCount, reviewed, slackReply, threadReply };
 }
