@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { reviewOutcome, buildThreadReply, runPool } from "../src/handlers/pr-review.js";
+import { reviewOutcome, buildThreadReply, runPool, handlePrReview } from "../src/handlers/pr-review.js";
 import { parseAllPrUrls } from "../src/github.js";
 
 const report = (lines) => `some worker chatter\n${lines}`;
@@ -84,4 +84,22 @@ test("buildThreadReply: one PR keeps prose, several become a per-PR list, none �
     buildThreadReply(many),
     "Reviewed 3 PRs:\n• #2250 — 3 comments\n• #2249 — LGTM\n• #2246 — 1 comment",
   );
+});
+
+// Regression (2026-08-19): the handler called parseAllPrUrls but the module still imported only
+// parsePrUrl, so EVERY review request died with "parseAllPrUrls is not defined" — 7 PRs silently
+// dropped over a day. Driving the handler's entry (the no-PR-link bail is the one path that stops
+// before claude/git) is what catches an undefined free variable; the pure-function tests cannot.
+test("handlePrReview runs its entry path — a message with no PR link bails, it does not throw", async () => {
+  const posted = [];
+  const ctx = {
+    mention: { text: "please review this", permalink: "https://slack/x", channel: { id: "C1" } },
+    classification: { prUrl: null, summary: "review please" },
+    contextBlock: "",
+    config: {},
+    slack: { postToSelf: async (_id, text) => (posted.push(text), "D1") },
+    selfId: "U1",
+  };
+  assert.deepEqual(await handlePrReview(ctx), { status: "no_pr_url" });
+  assert.match(posted[0], /no GitHub PR link found/);
 });

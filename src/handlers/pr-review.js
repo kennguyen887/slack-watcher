@@ -1,7 +1,7 @@
 import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
-import { parsePrUrl } from "../github.js";
+import { parseAllPrUrls } from "../github.js";
 import { log } from "../log.js";
 import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
 
