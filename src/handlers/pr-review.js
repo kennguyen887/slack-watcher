@@ -28,8 +28,8 @@ Workflow:
    \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=COMMENT --input <json>\` where the JSON has a "comments" array of {path, line, side: "RIGHT", body}. Never post a single big summary comment instead of inline comments.
 5. Every comment MUST include the fix as code: a \`\`\`suggestion block when the fix fits within the commented line(s); otherwise a short code snippet showing the fix.
 6. Comment style: English with basic vocabulary, short clear sentences. State the problem, the impact, then the fix. No long paragraphs — each comment's prose must stay under 200 characters (\`\`\`suggestion\`\`\`/code blocks do not count toward the limit).
-7. Comment-only review: do NOT approve, do NOT request changes.
-8. If the PR has no real issues, post nothing at all.
+7. If you found real issues, that review is COMMENT-only: do NOT approve and do NOT request changes — the inline comments carry the message.
+8. If the PR has no real issues, post NO inline comments and APPROVE it instead, so the author is unblocked and can merge: \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=APPROVE -f body='LGTM!'\`.
 
 End your final message with exactly these lines:
 REVIEW_STATUS: <reviewed | skipped — "skipped" if the PRE-CHECK stopped you (my own PR, I already reviewed it, or it is closed/merged) or you could not review the PR at all. Only "reviewed" means you actually read this diff.>

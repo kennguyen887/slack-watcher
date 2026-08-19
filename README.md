@@ -7,7 +7,7 @@ A personal Slack → Claude Code automation daemon. It watches Slack for message
 | Incoming message | What the watcher does |
 |---|---|
 | "@you fix the price filter on the listing page" | Spawns a headless [Claude Code](https://claude.com/claude-code) worker in a **disposable git worktree** → implements the fix → runs tests/lint → opens a **draft PR** targeting your integration branch |
-| "Please review this PR: github.com/…/pull/123" (mention optional) | Reviews the PR → posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs only, minor nits skipped, plain English) → replies in the Slack thread (or just **"LGTM!"** when the PR is clean) |
+| "Please review this PR: github.com/…/pull/123" (mention optional) | Reviews the PR → posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs only, minor nits skipped, plain English) → replies in the Slack thread; a clean PR gets an **approving review** instead, so the author can merge |
 | "@you fix the bug" (too vague) | DMs you 1-3 ready-to-send clarifying questions instead of guessing |
 | "@you when do we deploy?" | Skipped — the watcher only acts on code requests and PR reviews; questions are yours to answer |
 | "thanks @you!" / FYI / status update | Ignored — nothing happens |
