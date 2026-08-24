@@ -8,6 +8,7 @@ A personal Slack → Claude Code automation daemon. It watches Slack for message
 |---|---|
 | "@you fix the price filter on the listing page" | Spawns a headless [Claude Code](https://claude.com/claude-code) worker in a **disposable git worktree** → implements the fix → runs tests/lint → opens a **draft PR** targeting your integration branch |
 | "Please review this PR: github.com/…/pull/123" (mention optional) | Reviews the PR → posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs only, minor nits skipped, plain English) → replies in the Slack thread; a clean PR gets an **approving review** instead, so the author can merge |
+| "@you I updated them" (a reply in a thread whose PRs were already reviewed) | **Resumes the very session that reviewed each PR** in its kept worktree → verifies each earlier finding is really fixed in the new commits → comments on what is still broken, or approves and replies "Re-checked the update — LGTM!" |
 | "@you fix the bug" (too vague) | DMs you 1-3 ready-to-send clarifying questions instead of guessing |
 | "@you when do we deploy?" | Skipped — the watcher only acts on code requests and PR reviews; questions are yours to answer |
 | "thanks @you!" / FYI / status update | Ignored — nothing happens |
@@ -18,7 +19,7 @@ Built-in guardrails and quality-of-life:
 - **Reads the whole conversation** — pulls the thread or nearby messages, so requests split across several short messages are understood as one.
 - **Sees attachments** — downloads screenshots and small log/text files from the message (where bug reports usually live) and feeds them to the worker; the classifier only sees a cheap text marker, so vision cost is paid once, by the worker, only when files exist.
 - **Grace window + kill switch** — DMs you "starting in N min, reply `stop` to cancel" before doing anything; replying `stop` also works **while the worker runs** (checked every 20 s) and kills the Claude session immediately, discarding the worktree.
-- **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs.
+- **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs (an author's "updated" reply in a reviewed thread doesn't re-review from scratch — it resumes the recorded session, which re-checks only the update).
 - **Your working copy is sacred** — workers only ever touch isolated worktrees under `worktrees/`; drafts only; nothing public without the grace gate.
 - **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run. On macOS the finished session is auto-imported into the **Claude desktop app** (via its `claude://resume?session=<id>` deep link), so it just shows up in the app's session list; the DM also gives you `cd <worktree> && claude --resume <session-id>` for the terminal. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 3) days of inactivity.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
