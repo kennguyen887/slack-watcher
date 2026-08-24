@@ -149,18 +149,46 @@ test("matchReviewFollowup: thread reply into a recorded review resumes it, every
   assert.deepEqual(matchReviewFollowup(reply("fixed again"), chained).prs.map((p) => p.sessionId), ["s-7b"]);
 });
 
-test("buildFollowupThreadReply: re-check wording, only for PRs actually reviewed", () => {
+// Standing order (Ken, 2026-08-24): "nếu đã LGTM cũng reply slack" — a follow-up whose outcome
+// is a positive closure (already approved / already merged) must ANSWER the thread, not stay
+// silent; the author is waiting on their reply. Only murky outcomes stay a private DM.
+test("buildFollowupThreadReply: re-check wording, resolved closures answer the thread too", () => {
   assert.equal(buildFollowupThreadReply([]), null);
-  const one = (c) => [{ pr: { number: "7" }, outcome: { commentCount: c } }];
+  const one = (c) => [{ pr: { number: "7" }, status: "reviewed", outcome: { commentCount: c } }];
   assert.equal(buildFollowupThreadReply(one(0)), "Re-checked the update — LGTM!");
   assert.equal(buildFollowupThreadReply(one(1)), "Re-checked — left 1 more comment on the PR.");
+
+  // "resolved" posts the worker's own verified one-liner; empty falls back to a fixed LGTM.
   assert.equal(
     buildFollowupThreadReply([
-      { pr: { number: "7" }, outcome: { commentCount: 2 } },
-      { pr: { number: "8" }, outcome: { commentCount: 0 } },
+      { pr: { number: "7" }, status: "resolved", outcome: { commentCount: 0, slackReply: "Already approved and merged — LGTM." } },
     ]),
-    "Re-checked 2 PRs:\n• #7 — 2 more comments\n• #8 — LGTM",
+    "Already approved and merged — LGTM.",
   );
+  assert.equal(
+    buildFollowupThreadReply([{ pr: { number: "7" }, status: "resolved", outcome: { commentCount: 0, slackReply: "" } }]),
+    "Already approved — LGTM!",
+  );
+
+  assert.equal(
+    buildFollowupThreadReply([
+      { pr: { number: "7" }, status: "reviewed", outcome: { commentCount: 2 } },
+      { pr: { number: "8" }, status: "reviewed", outcome: { commentCount: 0 } },
+      { pr: { number: "9" }, status: "resolved", outcome: { commentCount: 0, slackReply: "Already merged with the fixes in." } },
+    ]),
+    "Re-checked 3 PRs:\n• #7 — 2 more comments\n• #8 — LGTM\n• #9 — Already merged with the fixes in.",
+  );
+});
+
+test("reviewOutcome exposes the raw status — resolved never counts as reviewed for the INITIAL flow", () => {
+  const resolved = reviewOutcome(
+    report("REVIEW_STATUS: resolved\nREVIEW_COMMENTS: 0\nSLACK_REPLY: Already approved and merged — LGTM."),
+  );
+  assert.equal(resolved.status, "resolved");
+  assert.equal(resolved.reviewed, false);
+  // The 2026-07-30 pin stands: initial reviews reply only on an actually-reviewed diff.
+  assert.equal(resolved.threadReply, null);
+  assert.equal(resolved.slackReply, "Already approved and merged — LGTM.");
 });
 
 // Same undefined-free-variable net as the handlePrReview entry test below: drive the follow-up

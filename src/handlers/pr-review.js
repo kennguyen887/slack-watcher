@@ -53,7 +53,10 @@ SLACK_REPLY: <one short sentence in ${detectLang(mention.text) === "vi" ? "Vietn
  */
 export function reviewOutcome(result) {
   const commentCount = Number.parseInt(result.match(/^REVIEW_COMMENTS:\s*(\d+)/m)?.[1] ?? "NaN", 10);
-  const reviewed = result.match(/^REVIEW_STATUS:\s*(\w+)/m)?.[1]?.toLowerCase() === "reviewed";
+  // status is the raw contract word; only follow-ups use values beyond reviewed/skipped
+  // ("resolved" — see followupPrompt). Initial reviews keep the reviewed-or-silent rule.
+  const status = result.match(/^REVIEW_STATUS:\s*(\w+)/m)?.[1]?.toLowerCase() ?? null;
+  const reviewed = status === "reviewed";
   const slackReply = result.match(/SLACK_REPLY:\s*([\s\S]+)$/m)?.[1]?.trim() ?? "";
   let threadReply = null;
   if (reviewed && !Number.isNaN(commentCount)) {
@@ -62,7 +65,7 @@ export function reviewOutcome(result) {
         ? `Reviewed — left ${commentCount} comment${commentCount === 1 ? "" : "s"} on the PR.`
         : "LGTM!";
   }
-  return { commentCount, reviewed, slackReply, threadReply };
+  return { commentCount, reviewed, status, slackReply, threadReply };
 }
 
 export async function handlePrReview(ctx) {
@@ -208,16 +211,16 @@ ${mention.text}
 """
 ${contextBlock}
 Workflow:
-1. Run \`git fetch origin\`, then \`gh pr checkout ${pr.number}\`. If the PR is closed or merged, STOP: report REVIEW_STATUS: skipped and say why in SLACK_REPLY.
+1. Run \`git fetch origin\`, then \`gh pr view ${pr.number} --json state,commits\` (and \`gh pr checkout ${pr.number}\` when it is still open). If the PR is already MERGED: check my reviews (\`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews\`) — when I approved it, or my findings were addressed before the merge, STOP with REVIEW_STATUS: resolved and a SLACK_REPLY that confirms the closure (e.g. "Already approved and merged — LGTM."). Closed WITHOUT merging, or merged with my real findings ignored: STOP with REVIEW_STATUS: skipped and say why.
 2. Establish what changed since my last review: \`gh api user --jq .login\` (me), \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews\` and \`.../pulls/${pr.number}/comments\` (my earlier findings), \`gh pr view ${pr.number} --json commits\`. If there are NO new commits since my last review and their reply points at nothing specific to look at, STOP: REVIEW_STATUS: skipped, and say in SLACK_REPLY that I found no new commits to re-check.
 3. Verify EACH of my earlier findings against the CURRENT code — is the problem actually fixed? Trace the code; never trust commit messages. Then review the new commits for NEW real problems with the same bar as the original review: bugs, regressions, lost data/functionality, broken API contracts, security issues, backward-compatibility breaks. SKIP minor issues entirely (style, naming, dead code, formatting). If unsure whether an issue is real, skip it.
 4. If an earlier finding is still broken or the update introduces a new real issue: post inline comments on the exact changed lines (RIGHT side), all in ONE review call — \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=COMMENT --input <json>\` with a "comments" array of {path, line, side: "RIGHT", body}. Every comment includes the fix as a \`\`\`suggestion block or a short snippet; short basic English, prose under 200 characters per comment. Do NOT approve.
-5. If everything I flagged is fixed and nothing new is broken: approve — \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=APPROVE -f body='LGTM!'\`. If I already approved AFTER their latest commit (an APPROVED review of mine newer than the head commit), do not approve again — just report reviewed with 0 comments.
+5. If everything I flagged is fixed and nothing new is broken: approve — \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=APPROVE -f body='LGTM!'\`. If I already approved AFTER their latest commit, do not approve again — report REVIEW_STATUS: resolved with a SLACK_REPLY confirming it is already approved.
 
 End your final message with exactly these lines:
-REVIEW_STATUS: <reviewed | skipped — "skipped" only if you did not actually evaluate the update (closed/merged, no new commits, or you could not review at all)>
+REVIEW_STATUS: <reviewed | resolved | skipped — "reviewed" only if you evaluated the update's diff this run; "resolved" when there is nothing left to review AND the outcome is final and positive for the author (already approved, already merged with my findings addressed) — your SLACK_REPLY is then posted to the thread; "skipped" when you could not or should not act (closed without merge, no new commits, cannot review) — then SLACK_REPLY stays a private DM>
 REVIEW_COMMENTS: <number of NEW inline comments you posted this run, 0 if none>
-SLACK_REPLY: <one short sentence in ${detectLang(mention.text) === "vi" ? "Vietnamese" : "English"}: what you found re-checking their update>`;
+SLACK_REPLY: <one short sentence in ${detectLang(mention.text) === "vi" ? "Vietnamese" : "English"}: what you found re-checking their update — for "resolved" this exact sentence goes to the thread, keep it plain and final>`;
 }
 
 /**
@@ -262,8 +265,12 @@ export async function handlePrReviewFollowup(ctx) {
     stopWatching();
   }
 
-  const reviewed = results.filter((r) => r.status === "reviewed");
-  const threadReply = buildFollowupThreadReply(reviewed);
+  // The author is literally waiting on their reply, so a POSITIVE closure answers the thread
+  // even when there was nothing left to re-review ("resolved": already approved / already
+  // merged with the findings addressed) — a silent LGTM reads as "review never happened".
+  // Only murky outcomes (closed unmerged, no new commits, failures) stay a private DM.
+  const answered = results.filter((r) => r.status === "reviewed" || r.status === "resolved");
+  const threadReply = buildFollowupThreadReply(answered);
   let repliedInThread = false;
   if (threadReply && mention.channel?.id) {
     await slack.replyInThread(mention.channel.id, followup.threadTs, threadReply);
@@ -275,7 +282,9 @@ export async function handlePrReviewFollowup(ctx) {
     trim(buildSummaryDm({ results, mention, repliedInThread, title: "PR review follow-up done" })),
   );
   return {
-    status: reviewed.length ? "reviewed" : (results[0]?.status ?? "skipped"),
+    status: answered.length
+      ? (results.some((r) => r.status === "reviewed") ? "reviewed" : "resolved")
+      : (results[0]?.status ?? "skipped"),
     threadTs: followup.threadTs,
     prs: results.map((r) => ({
       url: r.pr.url,
@@ -383,21 +392,39 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   }
 
   const outcome = reviewOutcome(result);
-  const status = !outcome.reviewed ? "skipped" : Number.isNaN(outcome.commentCount) ? "unparseable" : "reviewed";
-  log(`[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} new comment(s))` : ""}`);
+  const status = outcome.reviewed
+    ? Number.isNaN(outcome.commentCount)
+      ? "unparseable"
+      : "reviewed"
+    : outcome.status === "resolved"
+      ? "resolved"
+      : "skipped";
+  log(
+    `[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} new comment(s))` : status === "resolved" ? ` — ${outcome.slackReply.slice(0, 120)}` : ""}`,
+  );
   return { pr, status, outcome, result, worktreePath, sessionId };
 }
 
-/** Thread reply for a follow-up round — same only-if-actually-reviewed rule as buildThreadReply. */
-export function buildFollowupThreadReply(reviewed) {
-  if (!reviewed.length) return null;
-  const line = (c) => (c > 0 ? `left ${c} more comment${c === 1 ? "" : "s"} on the PR` : "LGTM!");
-  if (reviewed.length === 1) {
-    const c = reviewed[0].outcome.commentCount;
-    return c > 0 ? `Re-checked — ${line(c)}.` : "Re-checked the update — LGTM!";
+/**
+ * Thread reply for a follow-up round. "reviewed" wording states the new-comment count;
+ * "resolved" posts the worker's own verified one-liner (already approved / already merged) —
+ * the author asked a direct question, so a positive closure must never stay silent.
+ */
+export function buildFollowupThreadReply(answered) {
+  if (!answered.length) return null;
+  const resolvedText = (r) => (r.outcome.slackReply || "Already approved — LGTM!").slice(0, 300);
+  if (answered.length === 1) {
+    const r = answered[0];
+    if (r.status === "resolved") return resolvedText(r);
+    const c = r.outcome.commentCount;
+    return c > 0 ? `Re-checked — left ${c} more comment${c === 1 ? "" : "s"} on the PR.` : "Re-checked the update — LGTM!";
   }
-  return `Re-checked ${reviewed.length} PRs:\n${reviewed
-    .map((r) => `• #${r.pr.number} — ${r.outcome.commentCount > 0 ? `${r.outcome.commentCount} more comment${r.outcome.commentCount === 1 ? "" : "s"}` : "LGTM"}`)
+  return `Re-checked ${answered.length} PRs:\n${answered
+    .map((r) => {
+      if (r.status === "resolved") return `• #${r.pr.number} — ${resolvedText(r).slice(0, 120)}`;
+      const c = r.outcome.commentCount;
+      return `• #${r.pr.number} — ${c > 0 ? `${c} more comment${c === 1 ? "" : "s"}` : "LGTM"}`;
+    })
     .join("\n")}`;
 }
 
@@ -542,6 +569,8 @@ function buildSummaryDm({ results, mention, repliedInThread, title = "PR review 
     switch (r.status) {
       case "reviewed":
         return `:white_check_mark: ${r.pr.url} — ${c > 0 ? `${c} inline comment${c === 1 ? "" : "s"}` : "no issues (LGTM)"}`;
+      case "resolved":
+        return `:white_check_mark: ${r.pr.url} — resolved${r.outcome?.slackReply ? `: ${r.outcome.slackReply}` : " (already approved/merged)"}`;
       case "skipped":
         return `:information_source: ${r.pr.url} — skipped${r.outcome?.slackReply ? `: ${r.outcome.slackReply}` : " (pre-check: my own PR, already reviewed, or closed/merged)"}`;
       case "unparseable":
