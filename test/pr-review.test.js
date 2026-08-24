@@ -5,7 +5,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { reviewOutcome, buildThreadReply, runPool, handlePrReview } from "../src/handlers/pr-review.js";
+import {
+  reviewOutcome,
+  buildThreadReply,
+  runPool,
+  handlePrReview,
+  matchReviewFollowup,
+  buildFollowupThreadReply,
+  handlePrReviewFollowup,
+} from "../src/handlers/pr-review.js";
 import { parseAllPrUrls } from "../src/github.js";
 
 const report = (lines) => `some worker chatter\n${lines}`;
@@ -84,6 +92,105 @@ test("buildThreadReply: one PR keeps prose, several become a per-PR list, none �
     buildThreadReply(many),
     "Reviewed 3 PRs:\n• #2250 — 3 comments\n• #2249 — LGTM\n• #2246 — 1 comment",
   );
+});
+
+// Regression (2026-08-24): the author replying "I updated them" in a review thread was classified
+// as a status update → ignore, so the review never continued — the author waited on an approval
+// that was never coming. Follow-ups must be detected DETERMINISTICALLY from recorded review
+// threads, before the classifier can drop them.
+test("matchReviewFollowup: thread reply into a recorded review resumes it, everything else falls through", () => {
+  const wt = "/tmp/wt-pr7";
+  const entry = (key, threadTs, prs) => ({ key, classification: { kind: "pr_review" }, result: { threadTs, prs } });
+  const recorded = [
+    entry("C1:100.1", "100.1", [
+      { url: "https://github.com/Org/repo/pull/7", status: "reviewed", comments: 2, sessionId: "s-7", worktreePath: wt },
+      { url: "https://github.com/Org/repo/pull/8", status: "reviewed", comments: 0, sessionId: "s-8", worktreePath: wt },
+    ]),
+  ];
+  const reply = (text, { ts = "100.9", channel = "C1", threadTs = "100.1" } = {}) => ({
+    ts,
+    text,
+    channel: { id: channel },
+    permalink: `https://x.slack.com/archives/${channel}/p1009?thread_ts=${threadTs}`,
+  });
+
+  // Reply with no PR link → every recorded PR is re-checked.
+  const all = matchReviewFollowup(reply("<@U0> I updated them"), recorded);
+  assert.equal(all.threadTs, "100.1");
+  assert.deepEqual(all.prs.map((p) => p.sessionId), ["s-7", "s-8"]);
+
+  // Reply linking a SUBSET narrows the follow-up to those PRs.
+  const subset = matchReviewFollowup(reply("updated <https://github.com/Org/repo/pull/8|pr8>"), recorded);
+  assert.deepEqual(subset.prs.map((p) => p.sessionId), ["s-8"]);
+
+  // Reply linking a PR we never reviewed there is a NEW request → classifier path.
+  assert.equal(matchReviewFollowup(reply("also https://github.com/Org/repo/pull/9 please"), recorded), null);
+
+  // A thread ROOT (no thread_ts in the permalink) is never a follow-up.
+  assert.equal(
+    matchReviewFollowup({ ts: "200.1", text: "hi", channel: { id: "C1" }, permalink: "https://x.slack.com/archives/C1/p2001" }, recorded),
+    null,
+  );
+  // Unknown thread / other channel → null.
+  assert.equal(matchReviewFollowup(reply("updated", { threadTs: "999.9" }), recorded), null);
+  assert.equal(matchReviewFollowup(reply("updated", { channel: "C2" }), recorded), null);
+
+  // Pre-feature history rows (no sessionId/worktreePath) cannot be resumed → classifier path.
+  const legacy = [entry("C1:100.1", "100.1", [{ url: "https://github.com/Org/repo/pull/7", status: "reviewed", comments: 2 }])];
+  assert.equal(matchReviewFollowup(reply("I updated them"), legacy), null);
+
+  // The LATEST entry for the thread wins — chained follow-ups resume the freshest sessions.
+  const chained = [
+    ...recorded,
+    entry("C1:100.5", "100.1", [
+      { url: "https://github.com/Org/repo/pull/7", status: "reviewed", comments: 1, sessionId: "s-7b", worktreePath: wt },
+    ]),
+  ];
+  assert.deepEqual(matchReviewFollowup(reply("fixed again"), chained).prs.map((p) => p.sessionId), ["s-7b"]);
+});
+
+test("buildFollowupThreadReply: re-check wording, only for PRs actually reviewed", () => {
+  assert.equal(buildFollowupThreadReply([]), null);
+  const one = (c) => [{ pr: { number: "7" }, outcome: { commentCount: c } }];
+  assert.equal(buildFollowupThreadReply(one(0)), "Re-checked the update — LGTM!");
+  assert.equal(buildFollowupThreadReply(one(1)), "Re-checked — left 1 more comment on the PR.");
+  assert.equal(
+    buildFollowupThreadReply([
+      { pr: { number: "7" }, outcome: { commentCount: 2 } },
+      { pr: { number: "8" }, outcome: { commentCount: 0 } },
+    ]),
+    "Re-checked 2 PRs:\n• #7 — 2 more comments\n• #8 — LGTM",
+  );
+});
+
+// Same undefined-free-variable net as the handlePrReview entry test below: drive the follow-up
+// handler's real entry path up to the git boundary (worktree gone + no repos root → repo_missing)
+// with zero network. A missing import or typo anywhere on that path throws here.
+test("handlePrReviewFollowup runs its entry path — vanished worktree + missing repo degrades, does not throw", async () => {
+  const posted = [];
+  const replied = [];
+  const ctx = {
+    mention: { ts: "100.9", text: "I updated them", username: "nam", channel: { id: "C1", name: "dev" }, permalink: "https://slack/x?thread_ts=100.1" },
+    classification: { kind: "pr_review_followup" },
+    contextBlock: "",
+    config: { workerGraceMs: 0, reviewConcurrency: 2, reposRoot: "/nonexistent-repos-root", worktreesDir: "/tmp/wt", baseBranch: "main" },
+    slack: {
+      postToSelf: async (_id, text) => (posted.push(text), "D1"),
+      replyInThread: async (...args) => replied.push(args),
+      fetchMessagesSince: async () => [],
+      fetchContext: async () => ({ messages: [], kind: "none", error: null }),
+    },
+    selfId: "U1",
+    followup: {
+      threadTs: "100.1",
+      prs: [{ url: "https://github.com/Org/repo/pull/7", sessionId: "s-7", worktreePath: "/nonexistent-worktree-pr7" }],
+    },
+  };
+  const result = await handlePrReviewFollowup(ctx);
+  assert.equal(result.status, "repo_missing");
+  assert.equal(result.repliedInThread, false); // nothing was reviewed → the thread must stay silent
+  assert.deepEqual(replied, []);
+  assert.match(posted.at(-1), /follow-up/i);
 });
 
 // Regression (2026-08-19): the handler called parseAllPrUrls but the module still imported only

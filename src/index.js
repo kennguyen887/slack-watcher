@@ -7,6 +7,7 @@ import { loadState, saveState, mentionKey, appendHistory } from "./state.js";
 import { classifyMention } from "./classify.js";
 import { PR_URL_RE } from "./github.js";
 import { HANDLERS } from "./handlers/index.js";
+import { findReviewFollowup, handlePrReviewFollowup } from "./handlers/pr-review.js";
 import { pollCwalert } from "./sources/cwalert.js";
 import { log, stamp } from "./log.js";
 
@@ -56,6 +57,27 @@ async function processMention(mention, repos, config, slack, selfId) {
   }
 
   const contextBlock = formatConversationContext(context, mention, selfId);
+
+  // A reply in a thread we already reviewed ("I updated them") is a review follow-up — routed
+  // deterministically, BEFORE the classifier: the classifier reads such replies as status
+  // updates (→ ignore), and the review worker's never-double-review pre-check would block a
+  // fresh review anyway. The recorded session is resumed to re-check the update instead.
+  const followup = findReviewFollowup(mention, config.historyFile);
+  if (followup) {
+    const classification = {
+      kind: "pr_review_followup",
+      repo: null,
+      summary: `Follow-up in a reviewed thread — re-checking ${followup.prs.length} PR(s)`,
+      prUrl: followup.prs[0]?.url ?? null,
+      questions: [],
+    };
+    log(
+      `mention ${mentionKey(mention)} → pr_review_followup (${followup.prs.length} PR(s), thread ${followup.threadTs}) resuming recorded review session(s)`,
+    );
+    if (config.dryRun) return { classification, result: { status: "dry_run" } };
+    const result = await handlePrReviewFollowup({ mention, classification, contextBlock, config, slack, selfId, followup });
+    return { classification, result };
+  }
 
   const classification = await classifyMention(mention, repos, config, contextBlock);
   log(
