@@ -320,9 +320,9 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
       return { pr, status: "repo_missing", error: err.message };
     }
     try {
-      worktreePath = await gitMutex(() =>
+      ({ worktreePath } = await gitMutex(() =>
         createWorktree(repoPath, pr.repo, `${mention.ts}-pr${pr.number}`, config.worktreesDir, config.baseBranch),
-      );
+      ));
     } catch (err) {
       await slack.postToSelf(selfId, `:x: Could not prepare a worktree for re-reviewing ${pr.url}: ${err.message}`);
       return { pr, status: "worktree_failed", error: err.message };
@@ -452,9 +452,9 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   try {
     // Suffix the PR number: several PRs from one message share mention.ts and would otherwise
     // collide on the same worktree path. Serialized via gitMutex (fetch + worktree add).
-    worktreePath = await gitMutex(() =>
+    ({ worktreePath } = await gitMutex(() =>
       createWorktree(repoPath, pr.repo, `${mention.ts}-pr${pr.number}`, config.worktreesDir, config.baseBranch),
-    );
+    ));
   } catch (err) {
     await slack.postToSelf(selfId, `:x: Could not prepare a worktree for reviewing ${pr.url}: ${err.message}`);
     return { pr, status: "worktree_failed", error: err.message };

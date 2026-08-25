@@ -8,8 +8,7 @@ import { cancelledDuringGrace, minutes, newSessionId, resumeHint, showInDesktopA
 
 const HEARTBEAT_MS = 5 * 60_000;
 
-function workerPrompt({ mention, classification, contextBlock, config }, branchName, attachmentsBlock) {
-  const base = config.baseBranch;
+function workerPrompt({ mention, classification, contextBlock }, branchName, base, attachmentsBlock) {
   // The first line becomes the session's title in the Claude desktop app, so lead with "[slack]".
   return `[slack] Code request — ${classification.repo}. A teammate asked for a code change on Slack; implement it and open a draft PR.
 
@@ -63,7 +62,7 @@ export async function handleCodeRequest(ctx) {
       `> ${classification.summary}\n` +
       graceNote +
       `• Repo: *${classification.repo}* (branch \`${branchName}\`, isolated worktree)\n` +
-      `• Base: fresh \`origin/${config.baseBranch}\` — your working copy is untouched\n` +
+      `• Base: fresh \`origin/${config.baseBranch}\` (repo's default branch if that's missing) — your working copy is untouched\n` +
       `• Timeout: ${minutes(config.workerTimeoutMs)} min — I'll DM the result (draft PR or stop reason)\n` +
       `Original: ${mention.permalink ?? "n/a"}`,
   );
@@ -73,9 +72,10 @@ export async function handleCodeRequest(ctx) {
   }
 
   let worktreePath;
+  let base;
   try {
-    log(`[${classification.repo}] preparing isolated worktree from origin/${config.baseBranch}...`);
-    worktreePath = createWorktree(repoPath, classification.repo, mention.ts, config.worktreesDir, config.baseBranch);
+    log(`[${classification.repo}] preparing isolated worktree...`);
+    ({ worktreePath, base } = createWorktree(repoPath, classification.repo, mention.ts, config.worktreesDir, config.baseBranch));
     log(`[${classification.repo}] worktree ready: ${worktreePath}`);
   } catch (err) {
     await slack.postToSelf(
@@ -92,7 +92,7 @@ export async function handleCodeRequest(ctx) {
     selfId,
     `:hammer_and_wrench: *Coding now* — *${classification.repo}* / \`${branchName}\`\n` +
       `> ${classification.summary}\n` +
-      `Worktree ready from fresh \`origin/${config.baseBranch}\`. Next update: result DM (draft PR, stop reason, or timeout after ${minutes(config.workerTimeoutMs)} min). Progress heartbeat every 5 min in \`logs/watcher.log\`.\n` +
+      `Worktree ready from fresh \`origin/${base}\`. Next update: result DM (draft PR, stop reason, or timeout after ${minutes(config.workerTimeoutMs)} min). Progress heartbeat every 5 min in \`logs/watcher.log\`.\n` +
       `:technologist: Pick it up in Claude Code afterwards (any outcome): ${resumeHint(worktreePath, sessionId)}`,
   );
   const heartbeat = setInterval(
@@ -115,7 +115,7 @@ export async function handleCodeRequest(ctx) {
   try {
     result = await runClaude({
       bin: config.claudeBin,
-      prompt: workerPrompt(ctx, branchName, attachmentsBlock),
+      prompt: workerPrompt(ctx, branchName, base, attachmentsBlock),
       cwd: worktreePath,
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,

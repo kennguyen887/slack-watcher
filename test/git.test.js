@@ -31,7 +31,8 @@ test("createWorktree checks out the latest origin/<base>, picking up new commits
   fs.writeFileSync(path.join(work, "app.txt"), "v1");
   g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", base);
 
-  const wt1 = createWorktree(work, "repo", "1.0", worktreesDir, base);
+  const { worktreePath: wt1, base: base1 } = createWorktree(work, "repo", "1.0", worktreesDir, base);
+  assert.equal(base1, base);
   assert.equal(fs.readFileSync(path.join(wt1, "app.txt"), "utf8"), "v1");
 
   // A NEW commit lands on origin/rc after the first worktree was made.
@@ -39,15 +40,31 @@ test("createWorktree checks out the latest origin/<base>, picking up new commits
   g(work, "commit", "-am", "c2"); g(work, "push", "origin", base);
 
   // A fresh worktree must reflect the newest tip — this is the "fix on latest source" guarantee.
-  const wt2 = createWorktree(work, "repo", "2.0", worktreesDir, base);
+  const { worktreePath: wt2 } = createWorktree(work, "repo", "2.0", worktreesDir, base);
   assert.equal(fs.readFileSync(path.join(wt2, "app.txt"), "utf8"), "v2");
   assert.equal(g(wt2, "rev-parse", "HEAD"), g(work, "rev-parse", `origin/${base}`));
 });
 
-test("createWorktree throws a clear error when the base branch does not exist on origin", () => {
+// A PR-review request for a repo that ships from main must not die on BASE_BRANCH=rc —
+// this exact failure silently dropped a commonground-mapping review (2026-08-25).
+test("createWorktree falls back to the repo's default branch when the configured base is missing", () => {
   const { root, work } = makeRemoteAndClone("main");
   fs.writeFileSync(path.join(work, "f"), "x");
   g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", "main");
+
+  const { worktreePath, base } = createWorktree(work, "repo", "1.0", path.join(root, "wt"), "rc");
+  assert.equal(base, "main");
+  assert.equal(g(worktreePath, "rev-parse", "HEAD"), g(work, "rev-parse", "origin/main"));
+});
+
+test("createWorktree still throws a clear error when no base can be resolved at all", () => {
+  const { root, origin, work } = makeRemoteAndClone("main");
+  fs.writeFileSync(path.join(work, "f"), "x");
+  g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", "main");
+  // Point the remote's HEAD at a branch that doesn't exist and drop the local symref:
+  // now neither origin/<base> nor a default branch is resolvable.
+  execFileSync("git", ["-C", origin, "symbolic-ref", "HEAD", "refs/heads/gone"]);
+  g(work, "remote", "set-head", "origin", "--delete");
   assert.throws(
     () => createWorktree(work, "repo", "1.0", path.join(root, "wt"), "does-not-exist"),
     /base branch origin\/does-not-exist not found/,
@@ -64,8 +81,8 @@ test("pruneWorktrees removes only old linked worktrees, never fresh ones or fore
   fs.writeFileSync(path.join(work, "app.txt"), "v1");
   g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", base);
 
-  const oldWt = createWorktree(work, "repo", "1.0", worktreesDir, base);
-  const freshWt = createWorktree(work, "repo", "2.0", worktreesDir, base);
+  const { worktreePath: oldWt } = createWorktree(work, "repo", "1.0", worktreesDir, base);
+  const { worktreePath: freshWt } = createWorktree(work, "repo", "2.0", worktreesDir, base);
   const foreign = path.join(worktreesDir, "not-a-worktree");
   fs.mkdirSync(foreign);
   const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000);

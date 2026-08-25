@@ -126,15 +126,16 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
     `:rotating_light: *Auto-fix picked up a ${originOf(event)} ${event.severity}*\n` +
       `> ${trim(event.sample)}\n` +
       `• Service: *${event.service}* → repo *${repo}* (branch \`${branchName}\`, isolated worktree)\n` +
-      `• Base: fresh \`origin/${cfg.baseBranch}\` — your working copy is untouched\n` +
+      `• Base: fresh \`origin/${cfg.baseBranch}\` (repo's default branch if that's missing) — your working copy is untouched\n` +
       `• ${armedForAutoMerge(event, cfg) ? `Auto-merge ARMED (env \`${event.env}\`, fatal) — merges itself only if confidence ≥ ${cfg.autoMergeMinConfidence}/10, tests pass, PR clean and diff ≤ ${cfg.autoMergeMaxFiles} files/${cfg.autoMergeMaxLines} lines` : "Auto-merge off for this event — I'll ping you to review"}\n` +
       `• Reply \`stop\` here to cancel while it runs. Timeout ${minutes(config.workerTimeoutMs)} min — I'll DM the result (PR or reason).\n` +
       `Logs: ${event.consoleUrl}`,
   );
 
   let worktreePath;
+  let base;
   try {
-    worktreePath = createWorktree(repoPath, repo, String(event.ts), config.worktreesDir, cfg.baseBranch);
+    ({ worktreePath, base } = createWorktree(repoPath, repo, String(event.ts), config.worktreesDir, cfg.baseBranch));
     log(`[cwalert:${repo}] worktree ready: ${worktreePath}`);
   } catch (err) {
     await slack.postToSelf(
@@ -159,7 +160,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
   try {
     result = await runClaude({
       bin: config.claudeBin,
-      prompt: fixPrompt(event, branchName, cfg.baseBranch, cfg.draft),
+      prompt: fixPrompt(event, branchName, base, cfg.draft),
       cwd: worktreePath,
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,

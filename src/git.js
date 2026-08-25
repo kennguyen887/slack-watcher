@@ -22,6 +22,11 @@ export function git(repoPath, ...args) {
  * Workers must NEVER run inside the user's working copy — it may hold
  * uncommitted work on another branch. Give them a disposable worktree
  * checked out at the latest origin/<baseBranch> instead.
+ *
+ * Not every repo has the configured integration branch (mapping/docs/tool repos
+ * ship straight from main), so a missing origin/<baseBranch> falls back to the
+ * repo's own default branch instead of failing the whole task.
+ * @returns {{ worktreePath: string, base: string }} base = the branch actually checked out
  */
 export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch) {
   // "auto-" marks the session as watcher-spawned in the Claude desktop app's
@@ -32,23 +37,62 @@ export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch)
   // the CURRENT tip of the base branch (RC/master). We check the worktree out DETACHED at
   // origin/<base> — never a local branch — so a stale local RC/master can't leak in.
   git(repoPath, "fetch", "--all", "--prune");
-  let tip;
-  try {
-    tip = git(repoPath, "rev-parse", "--short", `origin/${baseBranch}`);
-  } catch {
-    throw new Error(
-      `base branch origin/${baseBranch} not found in ${repoName} after fetch — check BASE_BRANCH / the repo's default branch`,
-    );
+  let base = baseBranch;
+  if (!branchExists(repoPath, baseBranch)) {
+    const fallback = defaultBranch(repoPath);
+    if (!fallback) {
+      throw new Error(
+        `base branch origin/${baseBranch} not found in ${repoName} after fetch, and its default branch could not be resolved — check BASE_BRANCH / the repo's origin`,
+      );
+    }
+    base = fallback;
+    log(`[${repoName}] no origin/${baseBranch} — falling back to the repo's default branch origin/${base}`);
   }
-  git(repoPath, "worktree", "add", "--detach", worktreePath, `origin/${baseBranch}`);
+  const tip = git(repoPath, "rev-parse", "--short", `origin/${base}`);
+  git(repoPath, "worktree", "add", "--detach", worktreePath, `origin/${base}`);
   let subject = "";
   try {
-    subject = git(repoPath, "log", "-1", "--format=%s", `origin/${baseBranch}`);
+    subject = git(repoPath, "log", "-1", "--format=%s", `origin/${base}`);
   } catch {
     // best-effort log detail only
   }
-  log(`[${repoName}] worktree at latest origin/${baseBranch} @ ${tip}${subject ? ` — ${subject.slice(0, 72)}` : ""}`);
-  return worktreePath;
+  log(`[${repoName}] worktree at latest origin/${base} @ ${tip}${subject ? ` — ${subject.slice(0, 72)}` : ""}`);
+  return { worktreePath, base };
+}
+
+function branchExists(repoPath, branch) {
+  try {
+    git(repoPath, "rev-parse", "--verify", "--quiet", `origin/${branch}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The repo's default branch, read from the origin/HEAD symref. A checkout can lack the
+ * symref (older clones, manual remotes) — one `remote set-head --auto` refresh fixes that;
+ * the network is known good here because createWorktree just fetched.
+ * @returns {string|null}
+ */
+function defaultBranch(repoPath) {
+  for (const attempt of [1, 2]) {
+    try {
+      const ref = git(repoPath, "symbolic-ref", "refs/remotes/origin/HEAD");
+      const name = ref.replace(/^refs\/remotes\/origin\//, "");
+      if (name && name !== ref && branchExists(repoPath, name)) return name;
+    } catch {
+      // symref unset — refresh below
+    }
+    if (attempt === 1) {
+      try {
+        git(repoPath, "remote", "set-head", "origin", "--auto");
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 /**
