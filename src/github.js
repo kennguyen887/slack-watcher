@@ -81,3 +81,42 @@ export function mergePr(prUrl) {
   }
   return JSON.parse(gh(["pr", "view", prUrl, "--json", "mergeCommit"])).mergeCommit?.oid ?? "";
 }
+
+/** My GitHub login (gh's own auth), resolved once per process. */
+let cachedLogin = null;
+function myLogin() {
+  if (!cachedLogin) cachedLogin = gh(["api", "user", "--jq", ".login"]);
+  return cachedLogin;
+}
+
+/**
+ * What I have ACTUALLY landed on a PR — my reviews and my inline comments, straight from GitHub.
+ *
+ * A worker reports what it believes it did, and a review it wrote about but never submitted reads
+ * exactly like one it posted (commonground#2306: "no bugs found — approved", REVIEW_COMMENTS: 0,
+ * zero reviews on the PR). Every public claim is reconciled against this before the team hears it.
+ *
+ * `since` (ISO) counts only comments posted after it, so a follow-up round sees its NEW comments
+ * rather than the ones its first review left behind.
+ */
+export function myReviewState(pr, { since = null } = {}) {
+  const me = myLogin();
+  const view = JSON.parse(gh(["pr", "view", pr.url, "--json", "state,reviews"]));
+  const mine = (view.reviews ?? []).filter((r) => r.author?.login === me);
+  const inline = JSON.parse(gh(["api", `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/comments`, "--paginate"]));
+  return {
+    login: me,
+    state: view.state,
+    approved: mine.at(-1)?.state === "APPROVED",
+    comments: inline.filter((c) => c.user?.login === me && (!since || c.created_at > since)).length,
+  };
+}
+
+/** Submit the approving review. Kept in code — a worker can report an approve it never ran. */
+export function approvePr(pr, body = "LGTM!") {
+  try {
+    gh(["api", `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews`, "-f", "event=APPROVE", "-f", `body=${body}`]);
+  } catch (err) {
+    throw new Error(err.stderr?.toString().trim() || err.message);
+  }
+}

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 import {
   reviewOutcome,
+  verifyOutcome,
   buildThreadReply,
   runPool,
   handlePrReview,
@@ -43,6 +44,34 @@ test("reviewOutcome replies in the thread only when the diff was actually review
   // A worker that ignored the contract must not get a thread reply either.
   assert.equal(reviewOutcome("no markers at all").threadReply, null);
   assert.equal(reviewOutcome(report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: oops")).threadReply, null);
+});
+
+// Regression (2026-08-26, commonground#2306): the worker ended with "no bugs found — approved" and
+// REVIEW_COMMENTS: 0 but never ran the approve call. GitHub held no review at all, yet the thread
+// answered "LGTM!" and the author merged it unreviewed. A reported review is now proven against
+// GitHub: the watcher approves a clean PR itself, and an unbacked claim never reaches the thread.
+test("verifyOutcome: the watcher approves a clean PR, and an unlanded review is a mismatch", () => {
+  const clean = reviewOutcome("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: 0\nSLACK_REPLY: Looks good.");
+  const commented = reviewOutcome("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: 2\nSLACK_REPLY: Commented.");
+  const state = (over) => ({ login: "me", state: "OPEN", approved: false, comments: 0, ...over });
+
+  // The #2306 case: clean diff, nothing on the PR — the watcher submits the approval.
+  assert.deepEqual(verifyOutcome(clean, state()), { needsApprove: true, verified: false, mismatch: null });
+  // The worker approved it already (or an earlier round did) — do not approve twice.
+  assert.equal(verifyOutcome(clean, state({ approved: true })).needsApprove, false);
+  // Merged or closed while we were reading it: the diff WAS reviewed, nothing left to approve.
+  assert.deepEqual(verifyOutcome(clean, state({ state: "MERGED" })), { needsApprove: false, verified: true, mismatch: null });
+
+  // Claimed inline comments must exist on the PR before the team is told about them.
+  assert.equal(verifyOutcome(commented, state({ comments: 2 })).verified, true);
+  const lied = verifyOutcome(commented, state());
+  assert.equal(lied.verified, false);
+  assert.match(lied.mismatch, /reported 2 inline comment\(s\), GitHub has none from me/);
+
+  // A skipped or unparseable report is not a claim to verify — it never reached the thread anyway.
+  const skipped = reviewOutcome("REVIEW_STATUS: skipped\nREVIEW_COMMENTS: 0\nSLACK_REPLY: already merged");
+  assert.deepEqual(verifyOutcome(skipped, state()), { needsApprove: false, verified: false, mismatch: null });
+  assert.equal(verifyOutcome(reviewOutcome("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: nope"), state()).needsApprove, false);
 });
 
 test("parseAllPrUrls returns every distinct PR in a multi-PR message, deduped", () => {

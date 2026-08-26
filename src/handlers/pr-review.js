@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
-import { parseAllPrUrls, parsePrUrl } from "../github.js";
+import { approvePr, myReviewState, parseAllPrUrls, parsePrUrl } from "../github.js";
 import { log } from "../log.js";
 import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
 
@@ -30,7 +30,7 @@ Workflow:
 5. Every comment MUST include the fix as code: a \`\`\`suggestion block when the fix fits within the commented line(s); otherwise a short code snippet showing the fix.
 6. Comment style: English with basic vocabulary, short clear sentences. State the problem, the impact, then the fix. No long paragraphs — each comment's prose must stay under 200 characters (\`\`\`suggestion\`\`\`/code blocks do not count toward the limit).
 7. If you found real issues, that review is COMMENT-only: do NOT approve and do NOT request changes — the inline comments carry the message.
-8. If the PR has no real issues, post NO inline comments and APPROVE it instead, so the author is unblocked and can merge: \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=APPROVE -f body='LGTM!'\`.
+8. If the PR has no real issues, post NOTHING and simply report REVIEW_COMMENTS: 0 — I submit the approving review myself from your report, so the author is unblocked either way. Do NOT run an approve command.
 
 End your final message with exactly these lines:
 REVIEW_STATUS: <reviewed | skipped — "skipped" if the PRE-CHECK stopped you (my own PR, I already reviewed it, or it is closed/merged) or you could not review the PR at all. Only "reviewed" means you actually read this diff.>
@@ -66,6 +66,67 @@ export function reviewOutcome(result) {
         : "LGTM!";
   }
   return { commentCount, reviewed, status, slackReply, threadReply };
+}
+
+/**
+ * What GitHub proves about a reported review, and what still has to happen.
+ *
+ * The worker DECIDES (clean, or N inline comments); submitting the approval is boilerplate, so the
+ * decision stays with the worker and the ACTION lives here. Anything the worker claims that GitHub
+ * does not hold is a mismatch — the team must never hear about a review that never landed.
+ * @returns {{ needsApprove: boolean, verified: boolean, mismatch: string|null }}
+ */
+export function verifyOutcome(outcome, state) {
+  if (!outcome.reviewed || Number.isNaN(outcome.commentCount)) {
+    return { needsApprove: false, verified: false, mismatch: null };
+  }
+  if (outcome.commentCount > 0) {
+    return state.comments > 0
+      ? { needsApprove: false, verified: true, mismatch: null }
+      : {
+          needsApprove: false,
+          verified: false,
+          mismatch: `reported ${outcome.commentCount} inline comment(s), GitHub has none from ${state.login}`,
+        };
+  }
+  if (state.approved) return { needsApprove: false, verified: true, mismatch: null };
+  // Closed or merged mid-review: the diff WAS read, there is just nothing left to approve.
+  if (state.state !== "OPEN") return { needsApprove: false, verified: true, mismatch: null };
+  return { needsApprove: true, verified: false, mismatch: null };
+}
+
+/** Only comments from this run count, with slack for clock skew between this Mac and GitHub. */
+const sinceIso = (startedAt) => new Date(startedAt - 5 * 60_000).toISOString();
+
+/**
+ * Reconcile one finished review with GitHub, and submit the approval when the diff came back clean.
+ *
+ * Regression (2026-08-26, commonground#2306): the worker ended with "no bugs found — approved" and
+ * REVIEW_COMMENTS: 0 without ever running the approve call, so the thread answered "LGTM!" over a
+ * PR that carried no review at all and the author merged it unreviewed. Failing to READ GitHub is
+ * not evidence that nothing landed, so an unreachable gh keeps the worker's word.
+ * @returns {{ status: string, note: string|null }}
+ */
+function landReview({ pr, outcome, label, since }) {
+  let state;
+  try {
+    state = myReviewState(pr, { since });
+  } catch (err) {
+    log(`[${label}] could not read my review state on GitHub: ${err.message}`);
+    return { status: "reviewed", note: null };
+  }
+  let check = verifyOutcome(outcome, state);
+  if (check.needsApprove) {
+    try {
+      approvePr(pr);
+      log(`[${label}] approved the PR — worker reported it clean but submitted no review`);
+      return { status: "reviewed", note: "approved by the watcher (the worker had not)" };
+    } catch (err) {
+      check = { ...check, mismatch: `no review on the PR, and approving it failed: ${err.message}` };
+    }
+  }
+  if (check.mismatch) log(`[${label}] MISMATCH — ${check.mismatch}`);
+  return check.mismatch ? { status: "unverified", note: check.mismatch } : { status: "reviewed", note: null };
 }
 
 export async function handlePrReview(ctx) {
@@ -215,7 +276,7 @@ Workflow:
 2. Establish what changed since my last review: \`gh api user --jq .login\` (me), \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews\` and \`.../pulls/${pr.number}/comments\` (my earlier findings), \`gh pr view ${pr.number} --json commits\`. If there are NO new commits since my last review and their reply points at nothing specific to look at, STOP: REVIEW_STATUS: skipped, and say in SLACK_REPLY that I found no new commits to re-check.
 3. Verify EACH of my earlier findings against the CURRENT code — is the problem actually fixed? Trace the code; never trust commit messages. Then review the new commits for NEW real problems with the same bar as the original review: bugs, regressions, lost data/functionality, broken API contracts, security issues, backward-compatibility breaks. SKIP minor issues entirely (style, naming, dead code, formatting). If unsure whether an issue is real, skip it.
 4. If an earlier finding is still broken or the update introduces a new real issue: post inline comments on the exact changed lines (RIGHT side), all in ONE review call — \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=COMMENT --input <json>\` with a "comments" array of {path, line, side: "RIGHT", body}. Every comment includes the fix as a \`\`\`suggestion block or a short snippet; short basic English, prose under 200 characters per comment. Do NOT approve.
-5. If everything I flagged is fixed and nothing new is broken: approve — \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=APPROVE -f body='LGTM!'\`. If I already approved AFTER their latest commit, do not approve again — report REVIEW_STATUS: resolved with a SLACK_REPLY confirming it is already approved.
+5. If everything I flagged is fixed and nothing new is broken: post nothing and report REVIEW_COMMENTS: 0 — I submit the approving review myself from your report. Do NOT run an approve command. If I already approved AFTER their latest commit, report REVIEW_STATUS: resolved with a SLACK_REPLY confirming it is already approved.
 
 End your final message with exactly these lines:
 REVIEW_STATUS: <reviewed | resolved | skipped — "reviewed" only if you evaluated the update's diff this run; "resolved" when there is nothing left to review AND the outcome is final and positive for the author (already approved, already merged with my findings addressed) — your SLACK_REPLY is then posted to the thread; "skipped" when you could not or should not act (closed without merge, no new commits, cannot review) — then SLACK_REPLY stays a private DM>
@@ -392,17 +453,20 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   }
 
   const outcome = reviewOutcome(result);
-  const status = outcome.reviewed
+  let status = outcome.reviewed
     ? Number.isNaN(outcome.commentCount)
       ? "unparseable"
       : "reviewed"
     : outcome.status === "resolved"
       ? "resolved"
       : "skipped";
+  let note = null;
+  // "resolved" already read GitHub to reach its verdict; a fresh re-review still has to be proven.
+  if (status === "reviewed") ({ status, note } = landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
   log(
     `[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} new comment(s))` : status === "resolved" ? ` — ${outcome.slackReply.slice(0, 120)}` : ""}`,
   );
-  return { pr, status, outcome, result, worktreePath, sessionId };
+  return { pr, status, outcome, result, worktreePath, sessionId, note };
 }
 
 /**
@@ -510,9 +574,12 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   }
 
   const outcome = reviewOutcome(result);
-  const status = !outcome.reviewed ? "skipped" : Number.isNaN(outcome.commentCount) ? "unparseable" : "reviewed";
+  let status = !outcome.reviewed ? "skipped" : Number.isNaN(outcome.commentCount) ? "unparseable" : "reviewed";
+  let note = null;
+  // Never take the worker's word for a public action — reconcile it with GitHub first.
+  if (status === "reviewed") ({ status, note } = landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
   log(`[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} comment(s))` : ""}`);
-  return { pr, status, outcome, result, worktreePath, sessionId };
+  return { pr, status, outcome, result, worktreePath, sessionId, note };
 }
 
 /**
@@ -568,7 +635,9 @@ function buildSummaryDm({ results, mention, repliedInThread, title = "PR review 
     const c = r.outcome?.commentCount;
     switch (r.status) {
       case "reviewed":
-        return `:white_check_mark: ${r.pr.url} — ${c > 0 ? `${c} inline comment${c === 1 ? "" : "s"}` : "no issues (LGTM)"}`;
+        return `:white_check_mark: ${r.pr.url} — ${c > 0 ? `${c} inline comment${c === 1 ? "" : "s"}` : "no issues (LGTM)"}${r.note ? ` — ${r.note}` : ""}`;
+      case "unverified":
+        return `:warning: ${r.pr.url} — the worker reported a review that is NOT on the PR (${r.note}); nothing said in the thread, check it manually`;
       case "resolved":
         return `:white_check_mark: ${r.pr.url} — resolved${r.outcome?.slackReply ? `: ${r.outcome.slackReply}` : " (already approved/merged)"}`;
       case "skipped":
