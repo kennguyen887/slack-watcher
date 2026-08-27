@@ -48,6 +48,11 @@ export function loadConfig() {
     searchQueryOverride: env.SLACK_SEARCH_QUERY || "",
     prSearchQuery: env.PR_SEARCH_QUERY || "",
     baseBranch: env.BASE_BRANCH || "main",
+    // send.js target allowlist; empty means every target is allowed.
+    sendAllowedTargets: (env.SEND_ALLOWED_TARGETS || "")
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean),
     docsContextDir: env.DOCS_CONTEXT_DIR || "",
     claudeBin: env.CLAUDE_BIN || "claude",
     classifierModel: env.CLASSIFIER_MODEL || "haiku",

@@ -7,29 +7,50 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function call(token, method, params, { httpMethod = "POST" } = {}) {
+  let lastFailure = "rate limited";
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     let response;
-    if (httpMethod === "GET") {
-      const qs = new URLSearchParams(params).toString();
-      response = await fetch(`${SLACK_API}/${method}?${qs}`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } else {
-      response = await fetch(`${SLACK_API}/${method}`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json; charset=utf-8",
-        },
-        body: JSON.stringify(params),
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+    try {
+      if (httpMethod === "GET") {
+        const qs = new URLSearchParams(params).toString();
+        response = await fetch(`${SLACK_API}/${method}?${qs}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } else {
+        response = await fetch(`${SLACK_API}/${method}`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json; charset=utf-8",
+          },
+          body: JSON.stringify(params),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      }
+    } catch (err) {
+      // DNS failures, connection resets and the 30s abort all land here. These
+      // used to propagate on the first try, so one wifi blip lost the message
+      // (a send.js update, or worse a grace-gate DM) with nothing retrying it.
+      // A request that died mid-flight may in rare cases have been processed —
+      // for this tool a duplicated message beats a silently lost one.
+      lastFailure = err.message;
+      await sleep(1000 * (attempt + 1));
+      continue;
     }
 
     if (response.status === 429) {
       const retryAfter = Number.parseInt(response.headers.get("retry-after") || "5", 10);
+      lastFailure = "rate limited";
       await sleep((retryAfter + 1) * 1000);
+      continue;
+    }
+
+    // Slack asks clients to retry 5xx; a proxy's HTML error page also lands
+    // here rather than in the JSON parse below.
+    if (response.status >= 500) {
+      lastFailure = `HTTP ${response.status}`;
+      await sleep(1000 * (attempt + 1));
       continue;
     }
 
@@ -39,7 +60,7 @@ async function call(token, method, params, { httpMethod = "POST" } = {}) {
     }
     return body;
   }
-  throw new Error(`Slack ${method} failed: rate limited after ${MAX_RETRIES} retries`);
+  throw new Error(`Slack ${method} failed after ${MAX_RETRIES + 1} attempts: ${lastFailure}`);
 }
 
 /** Render fetched context as a prompt block. Empty string when there is nothing useful. */
