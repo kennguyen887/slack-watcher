@@ -89,11 +89,36 @@ test("pruneWorktrees removes only old linked worktrees, never fresh ones or fore
   fs.utimesSync(oldWt, tenDaysAgo, tenDaysAgo);
   fs.utimesSync(foreign, tenDaysAgo, tenDaysAgo);
 
-  assert.equal(pruneWorktrees(worktreesDir, 3), 1);
+  assert.equal(pruneWorktrees(worktreesDir, 3, 10), 1);
   assert.equal(fs.existsSync(oldWt), false, "stale worktree should be pruned");
   assert.equal(fs.existsSync(freshWt), true, "fresh worktree must survive");
   assert.equal(fs.existsSync(foreign), true, "non-worktree dirs must never be touched");
   // git's own bookkeeping no longer lists the pruned tree
+  assert.doesNotMatch(g(work, "worktree", "list"), /auto-repo-1-0/);
+});
+
+// Age alone cannot bound disk: reviews run ~10x a day and a checkout whose worker installed
+// node_modules is GBs, so a few days inside the age window filled this disk once already.
+// The count cap is the real ceiling — it must reap the oldest even when nothing is stale yet.
+test("pruneWorktrees caps kept worktrees at the newest N even when none are stale", () => {
+  const base = "rc";
+  const { root, work } = makeRemoteAndClone(base);
+  const worktreesDir = path.join(root, "worktrees");
+  fs.writeFileSync(path.join(work, "app.txt"), "v1");
+  g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", base);
+
+  // Three fresh worktrees, minutes apart so "newest" is unambiguous.
+  const wts = ["1.0", "2.0", "3.0"].map((ts, i) => {
+    const { worktreePath } = createWorktree(work, "repo", ts, worktreesDir, base);
+    const when = new Date(Date.now() - (3 - i) * 60_000);
+    fs.utimesSync(worktreePath, when, when);
+    return worktreePath;
+  });
+
+  assert.equal(pruneWorktrees(worktreesDir, 30, 2), 1);
+  assert.equal(fs.existsSync(wts[0]), false, "the oldest is over the cap and must go");
+  assert.equal(fs.existsSync(wts[1]), true, "the newest N must survive the cap");
+  assert.equal(fs.existsSync(wts[2]), true, "the newest N must survive the cap");
   assert.doesNotMatch(g(work, "worktree", "list"), /auto-repo-1-0/);
 });
 

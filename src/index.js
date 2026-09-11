@@ -142,7 +142,7 @@ async function main() {
 
   // Worktrees outlive their worker so sessions stay resumable — reap old ones here.
   try {
-    pruneWorktrees(config.worktreesDir, config.worktreeKeepDays);
+    pruneWorktrees(config.worktreesDir, config.worktreeKeepDays, config.worktreeKeepMax);
   } catch (err) {
     log(`worktree prune failed: ${err.message}`);
   }

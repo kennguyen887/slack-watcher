@@ -21,7 +21,7 @@ Built-in guardrails and quality-of-life:
 - **Grace window + kill switch** — DMs you "starting in N min, reply `stop` to cancel" before doing anything; replying `stop` also works **while the worker runs** (checked every 20 s) and kills the Claude session immediately, discarding the worktree.
 - **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs (an author's "updated" reply in a reviewed thread doesn't re-review from scratch — it resumes the recorded session, which re-checks only the update).
 - **Your working copy is sacred** — workers only ever touch isolated worktrees under `worktrees/`; drafts only; nothing public without the grace gate.
-- **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run. On macOS the finished session is auto-imported into the **Claude desktop app** (via its `claude://resume?session=<id>` deep link), so it just shows up in the app's session list; the DM also gives you `cd <worktree> && claude --resume <session-id>` for the terminal. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 3) days of inactivity.
+- **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run. On macOS the finished session is auto-imported into the **Claude desktop app** (via its `claude://resume?session=<id>` deep link), so it just shows up in the app's session list; the DM also gives you `cd <worktree> && claude --resume <session-id>` for the terminal. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 1) day of inactivity, and only the newest `WORKTREE_KEEP_MAX` (default 6) are kept at all — the cap is what keeps `worktrees/` from growing with review volume.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
 - **Manual send CLI** — fire off any message to a channel or DM in one command, with guards where it matters: transient network/5xx failures retry instead of losing the message, `--cap N` refuses over-length messages (default 2000), and an optional `SEND_ALLOWED_TARGETS` allowlist refuses unlisted targets — sends have no delete API, so a bad one can only be prevented, not recalled.
 
@@ -74,7 +74,7 @@ poll (45s) ──► search.messages: mentions of you  ──┐
 
 Safety properties:
 
-- **Your working copy is never touched** — workers run in isolated `git worktree`s under `worktrees/`, kept for `WORKTREE_KEEP_DAYS` days (so their sessions stay resumable), then pruned automatically on startup.
+- **Your working copy is never touched** — workers run in isolated `git worktree`s under `worktrees/`, kept for `WORKTREE_KEEP_DAYS` days and capped at the newest `WORKTREE_KEEP_MAX` (so recent sessions stay resumable without the folder growing unbounded), then pruned automatically on startup.
 - **Nothing public without a gate** — PRs are drafts; the only public actions (review comments + the "added comments" thread reply) sit behind the grace window ("reply `stop` to cancel").
 - **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own or already-reviewed PRs.
 - **Audit trail** — every processed message is appended to `history.jsonl`; live worker progress streams to `logs/watcher.log`.

@@ -165,41 +165,53 @@ export function removeWorktree(repoPath, worktreePath) {
   }
 }
 
+/** Remove a linked worktree through its main repo so git's own bookkeeping stays consistent. */
+function discardWorktree(worktreePath) {
+  try {
+    const commonDir = git(worktreePath, "rev-parse", "--path-format=absolute", "--git-common-dir");
+    git(path.dirname(commonDir), "worktree", "remove", "--force", worktreePath);
+  } catch {
+    // main repo gone or git refused — the directory itself still has to go
+    fs.rmSync(worktreePath, { recursive: true, force: true });
+  }
+}
+
 /**
- * Reap kept worktrees older than maxAgeDays (age = last write, so a worktree
- * the user is still working in keeps renewing itself). Runs on watcher startup.
+ * Reap kept worktrees: everything past the newest `maxKept`, plus anything older than
+ * maxAgeDays. The count cap is what actually bounds disk — age alone does not, because
+ * retention scales with review volume (a busy day is ~10 checkouts, and one that installed
+ * node_modules is GBs), so a few days of reviews fills the disk well inside the age window.
+ * Age = last write, so a worktree the user is still working in keeps renewing itself.
  * Touches ONLY directories that are linked git worktrees (a `.git` FILE);
  * anything else found under worktreesDir is left alone.
  * @returns {number} how many were removed
  */
-export function pruneWorktrees(worktreesDir, maxAgeDays) {
+export function pruneWorktrees(worktreesDir, maxAgeDays, maxKept) {
   if (!fs.existsSync(worktreesDir)) return 0;
   const cutoff = Date.now() - maxAgeDays * 86_400_000;
+
+  const worktrees = fs
+    .readdirSync(worktreesDir)
+    .map((name) => {
+      const wt = path.join(worktreesDir, name);
+      try {
+        if (!fs.statSync(wt).isDirectory()) return null;
+        if (!fs.statSync(path.join(wt, ".git")).isFile()) return null;
+        return { name, path: wt, mtimeMs: fs.statSync(wt).mtimeMs };
+      } catch {
+        return null; // a foreign dir, a plain file, or it vanished mid-scan
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first — the tail is what goes
+
   let pruned = 0;
-  for (const name of fs.readdirSync(worktreesDir)) {
-    const wt = path.join(worktreesDir, name);
-    let isStaleWorktree;
-    try {
-      isStaleWorktree =
-        fs.statSync(wt).isDirectory() &&
-        fs.statSync(wt).mtimeMs <= cutoff &&
-        fs.existsSync(path.join(wt, ".git")) &&
-        fs.statSync(path.join(wt, ".git")).isFile();
-    } catch {
-      continue; // vanished mid-scan
-    }
-    if (!isStaleWorktree) continue;
-    try {
-      // The worktree's .git file points back at the main repo — remove through
-      // it so git's worktree bookkeeping stays consistent.
-      const commonDir = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir");
-      git(path.dirname(commonDir), "worktree", "remove", "--force", wt);
-    } catch {
-      // main repo gone or git refused — the directory itself still has to go
-      fs.rmSync(wt, { recursive: true, force: true });
-    }
+  for (const [i, wt] of worktrees.entries()) {
+    const reason = i >= maxKept ? `beyond the newest ${maxKept}` : wt.mtimeMs <= cutoff ? `>${maxAgeDays}d old` : null;
+    if (!reason) continue;
+    discardWorktree(wt.path);
     pruned += 1;
-    log(`pruned stale worktree ${name} (>${maxAgeDays}d old)`);
+    log(`pruned worktree ${wt.name} (${reason})`);
   }
   return pruned;
 }

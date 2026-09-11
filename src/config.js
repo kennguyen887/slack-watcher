@@ -69,8 +69,11 @@ export function loadConfig() {
     // setup is serialized regardless; this caps the concurrent claude review workers.
     reviewConcurrency: intOption(env.REVIEW_CONCURRENCY, 3, { min: 1, max: 6 }),
     // Finished workers leave their worktree behind so the session can be resumed;
-    // pruneWorktrees reaps them on startup once older than this.
-    worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 3, { min: 1 }),
+    // pruneWorktrees reaps them on startup once older than this OR once a newer review
+    // pushes them past the cap. The cap is the one that bounds disk — retention by age
+    // alone grows with review volume, which is what filled this disk once already.
+    worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 1, { min: 1 }),
+    worktreeKeepMax: intOption(env.WORKTREE_KEEP_MAX, 6, { min: 1 }),
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
     // ── CloudWatch error → auto-fix source (off unless CWALERT_ENABLED) ──
     cwalert: {
