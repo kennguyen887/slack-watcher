@@ -1,7 +1,7 @@
 {
   "name": "slack-watcher",
   "version": "1.0.0",
-  "description": "Slack → Claude Code automation: turns mentions into draft PRs and PR reviews",
+  "description": "Slack \u2192 Claude Code automation: turns mentions into draft PRs and PR reviews",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,6 +16,7 @@
     "start": "node src/index.js",
     "once": "node src/index.js --once",
     "dry": "DRY_RUN=1 node src/index.js --once",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "retry": "node src/retry.js"
   }
 }

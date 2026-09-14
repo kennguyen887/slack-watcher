@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { pruneWorktrees } from "./git.js";
 import { listRepos } from "./repos.js";
@@ -13,7 +14,7 @@ import { log, stamp } from "./log.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function findNewMentions(matches, state, selfId) {
+export function findNewMentions(matches, state, selfId) {
   // search.messages renders mentions as <@ID> or <@ID|Display Name> — accept both.
   const mentionsMe = (m) => new RegExp(`<@${selfId}[|>]`).test(m.text ?? "");
   // PR-link messages trigger without a mention, but only the pr_review/ignore kinds downstream.
@@ -21,9 +22,24 @@ function findNewMentions(matches, state, selfId) {
   return matches
     .filter((m) => m.user !== selfId)
     .filter((m) => mentionsMe(m) || hasPrLink(m))
-    .filter((m) => Number.parseFloat(m.ts) > state.lastTs)
+    // lastTs is only a search window; a mention owed a retry is re-admitted below it.
+    .filter((m) => Number.parseFloat(m.ts) > state.lastTs || state.pending[mentionKey(m)])
     .filter((m) => !state.processed.includes(mentionKey(m)))
     .sort((a, b) => Number.parseFloat(a.ts) - Number.parseFloat(b.ts));
+}
+
+// Statuses that mean the work never ran, as opposed to ran-and-decided-not-to. These are
+// failures the handler reports instead of throwing, so they need the same retry as a throw —
+// a worktree that could not be created (a full disk, git contention) otherwise consumed the
+// request as if it had been reviewed. Everything else — cancelled, cancelled_by_user,
+// no_pr_url, unverified, reviewed — is a real outcome and must NOT come back.
+const RETRYABLE_STATUSES = new Set(["worktree_failed"]);
+
+/** Retire a mention: dedupe it forever, drop its retry entry, and move the search window. */
+function consume(state, key, mention) {
+  state.processed.push(key);
+  delete state.pending[key];
+  state.lastTs = Math.max(state.lastTs, Number.parseFloat(mention.ts));
 }
 
 /** Mention-search results win over PR-link results for the same message. */
@@ -116,20 +132,36 @@ async function pollOnce(config, slack, selfId, query, state) {
         classification,
         result,
       });
-    } catch (err) {
-      log(`ERROR processing ${key}: ${err.message}`);
-      appendHistory(config.historyFile, { key, error: err.message });
-      if (!config.dryRun) {
-        await slack
-          .postToSelf(selfId, `:x: Watcher failed on a mention (${mention.permalink ?? key}): ${err.message}`)
-          .catch((dmErr) => log(`ERROR posting failure DM: ${dmErr.message}`));
+      if (RETRYABLE_STATUSES.has(result?.status)) {
+        // Rethrow into the retry path below rather than duplicating its bookkeeping.
+        throw new Error(`did not run (${result.status})`);
       }
-    } finally {
-      // Dry runs must not consume mentions — they are inspection only.
       if (!config.dryRun) {
-        state.processed.push(key);
-        state.lastTs = Math.max(state.lastTs, Number.parseFloat(mention.ts));
+        consume(state, key, mention);
         saveState(config.stateFile, state);
+      }
+    } catch (err) {
+      // A mention used to be consumed even when processing threw, so one bad poll — an expired
+      // CLI login, a spend limit, a timeout — dropped the request for good and the team waited
+      // on a review that was never coming. Leave it queued and retry on later polls instead;
+      // the review worker's own never-double-review pre-check makes a retry safe.
+      const attempts = (state.pending[key]?.attempts ?? 0) + 1;
+      const exhausted = attempts >= config.mentionMaxAttempts;
+      log(`ERROR processing ${key}: ${err.message} (attempt ${attempts}/${config.mentionMaxAttempts}${exhausted ? " — giving up" : ", will retry"})`);
+      appendHistory(config.historyFile, { key, error: err.message, attempts, gaveUp: exhausted });
+      if (!config.dryRun) {
+        if (exhausted) consume(state, key, mention);
+        else state.pending[key] = { ts: mention.ts, attempts, lastError: err.message };
+        saveState(config.stateFile, state);
+        // One DM when it first breaks and one when it is abandoned — not once per attempt.
+        if (attempts === 1 || exhausted) {
+          const what = exhausted
+            ? `gave up after ${attempts} attempts (\`npm run retry -- ${key}\` to requeue)`
+            : `failed, retrying (attempt ${attempts}/${config.mentionMaxAttempts})`;
+          await slack
+            .postToSelf(selfId, `:x: Watcher ${what} on a mention (${mention.permalink ?? key}): ${err.message}`)
+            .catch((dmErr) => log(`ERROR posting failure DM: ${dmErr.message}`));
+        }
       }
     }
   }
@@ -200,7 +232,11 @@ async function main() {
   log("stopped");
 }
 
-main().catch((err) => {
-  console.error(`[${stamp()}] FATAL: ${err.message}`);
-  process.exit(1);
-});
+// Only run when this file IS the program. Importing it (a test reaching for one of its
+// helpers) used to start a second live watcher against the real Slack and state file.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`[${stamp()}] FATAL: ${err.message}`);
+    process.exit(1);
+  });
+}

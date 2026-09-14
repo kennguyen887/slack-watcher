@@ -72,6 +72,9 @@ export function loadConfig() {
     // pruneWorktrees reaps them on startup once older than this OR once a newer review
     // pushes them past the cap. The cap is the one that bounds disk — retention by age
     // alone grows with review volume, which is what filled this disk once already.
+    // A mention whose processing throws is retried on later polls instead of being
+    // swallowed; this bounds that, so a permanently poisoned one cannot loop forever.
+    mentionMaxAttempts: intOption(env.MENTION_MAX_ATTEMPTS, 5, { min: 1 }),
     worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 1, { min: 1 }),
     worktreeKeepMax: intOption(env.WORKTREE_KEEP_MAX, 6, { min: 1 }),
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",

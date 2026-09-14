@@ -4,13 +4,13 @@ const MAX_PROCESSED_KEYS = 500;
 
 export function loadState(stateFile) {
   if (!fs.existsSync(stateFile)) {
-    return { lastTs: 0, processed: [] };
+    return { lastTs: 0, processed: [], pending: {} };
   }
   try {
     const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    return { lastTs: state.lastTs ?? 0, processed: state.processed ?? [] };
+    return { lastTs: state.lastTs ?? 0, processed: state.processed ?? [], pending: state.pending ?? {} };
   } catch {
-    return { lastTs: 0, processed: [] };
+    return { lastTs: 0, processed: [], pending: {} };
   }
 }
 
@@ -18,6 +18,9 @@ export function saveState(stateFile, state) {
   const trimmed = {
     lastTs: state.lastTs,
     processed: state.processed.slice(-MAX_PROCESSED_KEYS),
+    // Mentions whose processing threw and are still owed a retry. Self-bounding:
+    // an entry leaves on success or once it exhausts its attempts.
+    pending: state.pending ?? {},
   };
   fs.writeFileSync(stateFile, JSON.stringify(trimmed, null, 2));
 }
