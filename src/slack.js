@@ -4,36 +4,27 @@ const MAX_RETRIES = 3;
 // guard would then skip every future tick behind a process that never exits.
 const REQUEST_TIMEOUT_MS = 30_000;
 
+export const WEBHOOK_URL_RE = /^https:\/\/hooks\.slack\.com\//;
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function call(token, method, params, { httpMethod = "POST" } = {}) {
+/**
+ * The attempt loop shared by both transports: network errors, 429s and 5xx are
+ * retried with backoff, anything else is handed back for the caller to read.
+ *
+ * Network errors used to propagate on the first try, so one wifi blip lost the
+ * message (a send.js update, or worse a grace-gate DM) with nothing retrying it.
+ * A request that died mid-flight may in rare cases have been delivered anyway —
+ * for this tool a duplicated message beats a silently lost one.
+ */
+async function fetchWithRetry(label, makeRequest) {
   let lastFailure = "rate limited";
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     let response;
     try {
-      if (httpMethod === "GET") {
-        const qs = new URLSearchParams(params).toString();
-        response = await fetch(`${SLACK_API}/${method}?${qs}`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-      } else {
-        response = await fetch(`${SLACK_API}/${method}`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json; charset=utf-8",
-          },
-          body: JSON.stringify(params),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-      }
+      response = await makeRequest();
     } catch (err) {
-      // DNS failures, connection resets and the 30s abort all land here. These
-      // used to propagate on the first try, so one wifi blip lost the message
-      // (a send.js update, or worse a grace-gate DM) with nothing retrying it.
-      // A request that died mid-flight may in rare cases have been processed —
-      // for this tool a duplicated message beats a silently lost one.
+      // DNS failures, connection resets and the 30s abort all land here.
       lastFailure = err.message;
       await sleep(1000 * (attempt + 1));
       continue;
@@ -47,20 +38,84 @@ async function call(token, method, params, { httpMethod = "POST" } = {}) {
     }
 
     // Slack asks clients to retry 5xx; a proxy's HTML error page also lands
-    // here rather than in the JSON parse below.
+    // here rather than in the caller's body parse.
     if (response.status >= 500) {
       lastFailure = `HTTP ${response.status}`;
       await sleep(1000 * (attempt + 1));
       continue;
     }
 
-    const body = await response.json();
-    if (!body.ok) {
-      throw new Error(`Slack ${method} failed: ${body.error}`);
-    }
-    return body;
+    return response;
   }
-  throw new Error(`Slack ${method} failed after ${MAX_RETRIES + 1} attempts: ${lastFailure}`);
+  throw new Error(`${label} failed after ${MAX_RETRIES + 1} attempts: ${lastFailure}`);
+}
+
+async function call(token, method, params, { httpMethod = "POST" } = {}) {
+  const response = await fetchWithRetry(`Slack ${method}`, () => {
+    if (httpMethod === "GET") {
+      const qs = new URLSearchParams(params).toString();
+      return fetch(`${SLACK_API}/${method}?${qs}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    }
+    return fetch(`${SLACK_API}/${method}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  });
+
+  const body = await response.json();
+  if (!body.ok) {
+    throw new Error(`Slack ${method} failed: ${body.error}`);
+  }
+  return body;
+}
+
+/** Normalize a target so "#Chan", "chan" and a raw ID all match one map key. */
+const webhookKey = (target) => String(target).replace(/^#/, "").toLowerCase();
+
+/** The incoming-webhook URL configured for this target, or null to post as the user. */
+export function resolveWebhook(webhooks, target) {
+  if (!webhooks || !target) return null;
+  const wanted = webhookKey(target);
+  const hit = Object.entries(webhooks).find(([channel]) => webhookKey(channel) === wanted);
+  return hit ? hit[1] : null;
+}
+
+/**
+ * Post through an incoming webhook, so the message shows up as the webhook's app
+ * instead of as you. The webhook is bound to ONE channel when it is created, so the
+ * map key is only a routing label — the URL alone decides where the text lands.
+ */
+async function postWebhook(url, text, threadTs) {
+  const response = await fetchWithRetry("Slack webhook", () =>
+    fetch(url, {
+      method: "POST",
+      // No Authorization header: the URL *is* the credential, and handing the user
+      // token to it would leak exactly what this route exists to stop using.
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({
+        text,
+        unfurl_links: false,
+        unfurl_media: false,
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    }),
+  );
+
+  // Webhooks answer in plain text: "ok", or a 4xx with invalid_payload /
+  // channel_not_found / no_service (a revoked, mistyped or deleted hook).
+  const body = (await response.text()).trim();
+  if (!response.ok || body !== "ok") {
+    throw new Error(`Slack webhook failed: HTTP ${response.status} ${body || "(empty body)"}`);
+  }
 }
 
 /** Render fetched context as a prompt block. Empty string when there is nothing useful. */
@@ -87,7 +142,12 @@ ${lines.join("\n").slice(0, 4000)}
 `;
 }
 
-export function createSlackClient(token) {
+/**
+ * @param webhooks  channel → incoming-webhook URL. A target on this map is posted through
+ *                  its webhook (as the webhook's app); everything else posts as the token's
+ *                  user. Empty map = today's behavior, everything as you.
+ */
+export function createSlackClient(token, webhooks = {}) {
   return {
     async whoAmI() {
       const { user_id, user, team } = await call(token, "auth.test", {});
@@ -155,6 +215,13 @@ export function createSlackClient(token) {
 
     /** Post to any conversation: channel ID, #channel-name, user ID (DM), or group ID. */
     async post(channel, text) {
+      const hook = resolveWebhook(webhooks, channel);
+      if (hook) {
+        await postWebhook(hook, text);
+        // The webhook answers "ok" and nothing else, so echo the target back: callers
+        // only use this to say where the message went.
+        return channel;
+      }
       const body = await call(token, "chat.postMessage", {
         channel,
         text,
@@ -200,8 +267,13 @@ export function createSlackClient(token) {
       return body.channel;
     },
 
-    /** Public thread reply AS THE USER — only used after an explicit per-feature opt-in (e.g. PR review confirmations). */
+    /**
+     * Public thread reply as the user — only used after an explicit per-feature opt-in
+     * (e.g. PR review confirmations). A channel with a webhook replies as the app instead.
+     */
     async replyInThread(channel, threadTs, text) {
+      const hook = resolveWebhook(webhooks, channel);
+      if (hook) return postWebhook(hook, text, threadTs);
       await call(token, "chat.postMessage", {
         channel,
         text,

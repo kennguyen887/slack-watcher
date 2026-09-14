@@ -19,7 +19,7 @@
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
-import { createSlackClient } from "./slack.js";
+import { createSlackClient, resolveWebhook } from "./slack.js";
 
 export const DEFAULT_CAP = 2000;
 
@@ -79,9 +79,12 @@ if (isCli) {
     process.exit(1);
   }
 
-  const slack = createSlackClient(config.slackToken);
+  const slack = createSlackClient(config.slackToken, config.slackWebhooks);
+  // Name the transport: "as you" vs "via webhook" is the whole point of the routing,
+  // and a silent switch either way is the thing worth catching.
+  const via = resolveWebhook(config.slackWebhooks, to) ? "via webhook" : "as you";
   sendSlackMessage(slack, to, text)
-    .then((channel) => console.log(`sent to ${to} (${channel}) — ${countChars(text)} chars`))
+    .then((channel) => console.log(`sent to ${to} (${channel}) ${via} — ${countChars(text)} chars`))
     .catch((err) => {
       console.error(`failed: ${err.message}`);
       process.exit(1);

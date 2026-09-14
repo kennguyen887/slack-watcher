@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { WEBHOOK_URL_RE } from "./slack.js";
 
 export const BASE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -48,6 +49,9 @@ export function loadConfig() {
     searchQueryOverride: env.SLACK_SEARCH_QUERY || "",
     prSearchQuery: env.PR_SEARCH_QUERY || "",
     baseBranch: env.BASE_BRANCH || "main",
+    // channel → incoming-webhook URL, as JSON. A listed channel is posted to through its
+    // webhook (as the webhook's app) instead of as you; everything else is unchanged.
+    slackWebhooks: parseJsonEnv(env.SLACK_WEBHOOKS),
     // send.js target allowlist; empty means every target is allowed.
     sendAllowedTargets: (env.SEND_ALLOWED_TARGETS || "")
       .split(",")
@@ -112,6 +116,21 @@ export function loadConfig() {
     errors.push("SLACK_USER_TOKEN is required (set it in slack-watcher/.env)");
   } else if (!config.slackToken.startsWith("xoxp-")) {
     errors.push("SLACK_USER_TOKEN must be a user token (xoxp-...) — bot tokens cannot use search.messages");
+  }
+  // A typo here must not fall back to posting as you: that is the one outcome this
+  // setting exists to prevent, and it would be invisible until someone reads the channel.
+  if (env.SLACK_WEBHOOKS && Object.keys(config.slackWebhooks).length === 0) {
+    errors.push("SLACK_WEBHOOKS is set but is not a JSON object of {\"#channel\": \"https://hooks.slack.com/...\"}");
+  }
+  for (const [channel, url] of Object.entries(config.slackWebhooks)) {
+    if (typeof url !== "string" || !WEBHOOK_URL_RE.test(url)) {
+      errors.push(`SLACK_WEBHOOKS["${channel}"] must be an https://hooks.slack.com/... URL`);
+    }
+    // A webhook is bound to a channel and cannot reach a DM. Keyed by a DM target it would
+    // silently divert that DM into the webhook's channel — a wrong-channel send, in public.
+    if (/^[@UD]/.test(channel)) {
+      errors.push(`SLACK_WEBHOOKS["${channel}"] looks like a DM target — webhooks post to a channel only`);
+    }
   }
   if (!fs.existsSync(config.reposRoot)) {
     errors.push(`REPOS_ROOT does not exist: ${config.reposRoot}`);

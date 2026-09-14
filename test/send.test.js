@@ -103,3 +103,92 @@ test("post does not retry a Slack API error (channel_not_found is final)", async
   await assert.rejects(createSlackClient("xoxp-test").post("#nope", "hi"), /channel_not_found/);
   assert.equal(attempts, 1);
 });
+
+// ── webhook routing ──────────────────────────────────────────────────────────
+// The point of the routing is WHO the message appears to be from, so what these
+// pin is the transport choice: which URL was hit, and that the user token never
+// travels to the hook.
+
+const HOOK = "https://hooks.slack.com/services/T1/B1/secret";
+const webhooks = { "#commonground-monitoring": HOOK };
+
+test("a mapped channel posts through the webhook, never as the user", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    calls.push({ url, auth: init.headers.Authorization, body: JSON.parse(init.body) });
+    return new Response("ok", { status: 200 });
+  });
+
+  const slack = createSlackClient("xoxp-test", webhooks);
+  // Matched however the sender spells it — "#chan", bare name, different case.
+  assert.equal(await slack.post("#commonground-monitoring", "alert"), "#commonground-monitoring");
+  assert.equal(await slack.post("CommonGround-Monitoring", "alert"), "CommonGround-Monitoring");
+
+  assert.deepEqual(calls.map((c) => c.url), [HOOK, HOOK]);
+  assert.deepEqual(calls.map((c) => c.auth), [undefined, undefined]);
+  assert.equal(calls[0].body.text, "alert");
+});
+
+test("an unmapped channel still posts as the user", async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    urls.push(url);
+    return jsonResponse(okBody);
+  });
+
+  assert.equal(await createSlackClient("xoxp-test", webhooks).post("#other", "hi"), "C123");
+  assert.deepEqual(urls, ["https://slack.com/api/chat.postMessage"]);
+});
+
+test("a thread reply in a mapped channel goes through the webhook, carrying thread_ts", async (t) => {
+  let sent;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    sent = { url, body: JSON.parse(init.body) };
+    return new Response("ok", { status: 200 });
+  });
+
+  await createSlackClient("xoxp-test", webhooks).replyInThread(
+    "#commonground-monitoring",
+    "1789368905.765999",
+    "on it",
+  );
+  assert.equal(sent.url, HOOK);
+  assert.equal(sent.body.thread_ts, "1789368905.765999");
+});
+
+test("a webhook 5xx retries, and a revoked hook (4xx) fails once with Slack's reason", async (t) => {
+  let attempts = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    attempts += 1;
+    return new Response("server_error", { status: 503 });
+  });
+  t.mock.method(globalThis, "setTimeout");
+  globalThis.setTimeout.mock.mockImplementation((fn) => fn());
+
+  const slack = createSlackClient("xoxp-test", webhooks);
+  await assert.rejects(
+    slack.post("#commonground-monitoring", "hi"),
+    /Slack webhook failed after 4 attempts: HTTP 503/,
+  );
+  assert.equal(attempts, 4);
+
+  // A revoked/deleted hook answers 4xx forever — retrying it only delays the error.
+  globalThis.fetch.mock.mockImplementation(async () => new Response("no_service", { status: 404 }));
+  const before = globalThis.fetch.mock.callCount();
+  await assert.rejects(
+    slack.post("#commonground-monitoring", "hi"),
+    /Slack webhook failed: HTTP 404 no_service/,
+  );
+  assert.equal(globalThis.fetch.mock.callCount() - before, 1);
+});
+
+test("sendSlackMessage leaves DM resolution alone — a webhook cannot reach a DM", async (t) => {
+  const urls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    urls.push(String(url).split("?")[0]);
+    return jsonResponse({ ...okBody, members: [{ id: "U123", name: "ken" }] });
+  });
+
+  await sendSlackMessage(createSlackClient("xoxp-test", webhooks), "@ken", "hello");
+  assert.deepEqual(urls, ["https://slack.com/api/users.list", "https://slack.com/api/chat.postMessage"]);
+});

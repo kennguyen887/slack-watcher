@@ -179,7 +179,7 @@ async function main() {
     log(`worktree prune failed: ${err.message}`);
   }
 
-  const slack = createSlackClient(config.slackToken);
+  const slack = createSlackClient(config.slackToken, config.slackWebhooks);
   const { userId, userName, team } = await slack.whoAmI();
   const query = config.searchQueryOverride || `<@${userId}>`;
 

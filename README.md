@@ -24,6 +24,7 @@ Built-in guardrails and quality-of-life:
 - **Pick up where the worker left off** — every code/review worker runs under a known session id in a worktree that survives the run. On macOS the finished session is auto-imported into the **Claude desktop app** (via its `claude://resume?session=<id>` deep link), so it just shows up in the app's session list; the DM also gives you `cd <worktree> && claude --resume <session-id>` for the terminal. Worktrees auto-prune after `WORKTREE_KEEP_DAYS` (default 1) day of inactivity, and only the newest `WORKTREE_KEEP_MAX` (default 6) are kept at all — the cap is what keeps `worktrees/` from growing with review volume.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
 - **Manual send CLI** — fire off any message to a channel or DM in one command, with guards where it matters: transient network/5xx failures retry instead of losing the message, `--cap N` refuses over-length messages (default 2000), and an optional `SEND_ALLOWED_TARGETS` allowlist refuses unlisted targets — sends have no delete API, so a bad one can only be prevented, not recalled.
+- **Post as an app, not as you, per channel** — `SLACK_WEBHOOKS` maps a channel to an incoming-webhook URL; anything sent there (by `send.js`, by an external script piping into it, or by a review's thread reply) goes out as the webhook's app instead of your account. Everything else is untouched, DMs always stay on your token, and `send.js` names the transport it used on every send.
 
 ## Requirements
 
