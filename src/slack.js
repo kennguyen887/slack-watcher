@@ -154,11 +154,11 @@ export function createSlackClient(token, webhooks = {}) {
       return { userId: user_id, userName: user, team };
     },
 
-    async searchMentions(query, count = 50) {
+    async searchMentions(query, count = 50, page = 1) {
       const body = await call(
         token,
         "search.messages",
-        { query, sort: "timestamp", sort_dir: "desc", count: String(count) },
+        { query, sort: "timestamp", sort_dir: "desc", count: String(count), page: String(page) },
         { httpMethod: "GET" },
       );
       return body.messages?.matches ?? [];

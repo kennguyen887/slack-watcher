@@ -13,6 +13,32 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const VI_RE = /[ơưăđ]|[Ẁ-ỿ]/i;
 /** Returns "vi" or "en" based on mention.text only — ignores context block. */
 export const detectLang = (text = "") => (VI_RE.test(text) ? "vi" : "en");
+
+// Vietnamese function words that survive being typed without diacritics, so a teammate who
+// dropped their VN keyboard ("a oi cai nay em sua o branch nao") still reads as Vietnamese.
+// Lookaround, not consuming boundaries: two Vietnamese words in a row ("cai nay em") must
+// count as three markers, not two — a consumed separator hides every second word.
+const VI_WORDS =
+  /(?<=^|[\s,.?!:;()"'])(anh|em|ơi|oi|nhé|nhe|nha|nhen|dùm|dum|đc|dc|được|duoc|ko|không|khong|rồi|roi|này|nay|với|voi|dạ|ạ|vậy|vay|thì|của|cua|mình|minh|giúp|giup|hỏi|sao|nhỉ|nhi|luôn|luon|giùm)(?=$|[\s,.?!:;()"'])/giu;
+
+/**
+ * How strongly a message reads as Vietnamese: the number of distinct Vietnamese markers in it.
+ *
+ * detectLang answers "which language do I write the reply in" and one diacritic is enough for
+ * that. This answers a different, riskier question — "may I post publicly under the user's name
+ * without them reading it first" — so one stray accented word in an English message (a quoted
+ * name, a pasted log line) must NOT be enough. Counting DISTINCT markers is what separates
+ * "Ngô sent this CSV" from a real Vietnamese sentence.
+ */
+export function vietnameseScore(text = "") {
+  const words = new Set((text.match(VI_WORDS) ?? []).map((w) => w.trim().toLowerCase()));
+  const diacritics = new Set(text.match(/[ơưăđ]|[Ẁ-ỿ]/giu) ?? []);
+  return words.size + Math.min(diacritics.size, 3);
+}
+
+/** The gate for replying publicly in Vietnamese. English-speaking teammates never pass it. */
+export const isVietnamese = (text = "", threshold = 3) => vietnameseScore(text) >= threshold;
+
 export const minutes = (ms) => Math.round(ms / 60_000);
 export const trim = (text) =>
   text.length > SLACK_TEXT_LIMIT ? `${text.slice(0, SLACK_TEXT_LIMIT)}\n… (truncated)` : text;

@@ -6,4 +6,5 @@ history.jsonl
 logs/
 worktrees/
 attachments/
+style/
 .DS_Store
