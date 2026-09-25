@@ -47,6 +47,8 @@ export function prStatus(prUrl) {
   else if (runs.some((r) => !concluded(r))) checks = "pending";
   else if (runs.some((r) => !ok(r))) checks = "failed";
   return {
+    // CheckRun carries `name`, a legacy StatusContext carries `context`.
+    failedChecks: runs.filter((r) => concluded(r) && !ok(r)).map((r) => r.name ?? r.context ?? "?"),
     state: pr.state,
     isDraft: pr.isDraft,
     mergeable: pr.mergeable,

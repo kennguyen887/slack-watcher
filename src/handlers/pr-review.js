@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
-import { approvePr, myReviewState, parseAllPrUrls, parsePrUrl } from "../github.js";
+import { approvePr, myReviewState, parseAllPrUrls, parsePrUrl, waitForChecks } from "../github.js";
 import { log } from "../log.js";
 import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
 
@@ -30,7 +30,8 @@ Workflow:
 5. Every comment MUST include the fix as code: a \`\`\`suggestion block when the fix fits within the commented line(s); otherwise a short code snippet showing the fix.
 6. Comment style: English with basic vocabulary, short clear sentences. State the problem, the impact, then the fix. No long paragraphs — each comment's prose must stay under 200 characters (\`\`\`suggestion\`\`\`/code blocks do not count toward the limit).
 7. If you found real issues, that review is COMMENT-only: do NOT approve and do NOT request changes — the inline comments carry the message.
-8. If the PR has no real issues, post NOTHING and simply report REVIEW_COMMENTS: 0 — I submit the approving review myself from your report, so the author is unblocked either way. Do NOT run an approve command.
+8. CI: run \`gh pr checks ${pr.number}\`. For EVERY failed check (lint, typecheck/tsc, tests, build) read its log (\`gh run view <run-id> --log-failed\`) and find the root cause. A failure caused by this PR is a real issue: post it as an inline comment on the offending changed line with the fix. A failure the diff did not cause (flaky test, base branch already red, infra) gets no comment — name it in SLACK_REPLY instead. A green diff with red CI is NOT clean: I never approve while any check is failing or still running.
+9. If the PR has no real issues, post NOTHING and simply report REVIEW_COMMENTS: 0 — I submit the approving review myself from your report, so the author is unblocked either way. Do NOT run an approve command.
 
 End your final message with exactly these lines:
 REVIEW_STATUS: <reviewed | skipped — "skipped" if the PRE-CHECK stopped you (my own PR, I already reviewed it, or it is closed/merged) or you could not review the PR at all. Only "reviewed" means you actually read this diff.>
@@ -95,6 +96,35 @@ export function verifyOutcome(outcome, state) {
   return { needsApprove: true, verified: false, mismatch: null };
 }
 
+/**
+ * Why a clean diff must NOT be approved yet, or null when CI allows it.
+ *
+ * A reviewer who reads only the diff approves PRs whose lint / tsc pipeline is red, and the author
+ * merges on that approval. Pending checks are waited on (bounded); still pending, failed, or
+ * unreadable → hold the approval. A repo that runs no checks has nothing to gate on.
+ * @returns {Promise<{ checks: "failed"|"pending"|"unknown", names: string } | null>}
+ */
+async function ciGate(pr, label) {
+  try {
+    const status = await waitForChecks(pr.url, { timeoutMs: CI_WAIT_MS });
+    if (status.checks === "green" || status.checks === "none") return null;
+    log(`[${label}] holding approval — CI ${status.checks} ${status.failedChecks.join(", ")}`);
+    return { checks: status.checks, names: status.failedChecks.join(", ") };
+  } catch (err) {
+    log(`[${label}] could not read CI status, holding approval: ${err.message}`);
+    return { checks: "unknown", names: "" };
+  }
+}
+
+const CI_WAIT_MS = 10 * 60_000;
+
+/** The thread line for a clean diff whose approval CI is holding back. */
+export function ciHoldReply(ci) {
+  if (ci.checks === "failed") return `Code looks good, but CI is failing (${ci.names}) — reply here once it's green and I'll approve.`;
+  if (ci.checks === "pending") return "Code looks good, but CI is still running — reply here once it's green and I'll approve.";
+  return "Code looks good, but I couldn't read the CI status — not approving yet.";
+}
+
 /** Only comments from this run count, with slack for clock skew between this Mac and GitHub. */
 const sinceIso = (startedAt) => new Date(startedAt - 5 * 60_000).toISOString();
 
@@ -107,7 +137,7 @@ const sinceIso = (startedAt) => new Date(startedAt - 5 * 60_000).toISOString();
  * not evidence that nothing landed, so an unreachable gh keeps the worker's word.
  * @returns {{ status: string, note: string|null }}
  */
-function landReview({ pr, outcome, label, since }) {
+async function landReview({ pr, outcome, label, since }) {
   let state;
   try {
     state = myReviewState(pr, { since });
@@ -117,6 +147,8 @@ function landReview({ pr, outcome, label, since }) {
   }
   let check = verifyOutcome(outcome, state);
   if (check.needsApprove) {
+    const ci = await ciGate(pr, label);
+    if (ci) return { status: "reviewed", note: `not approved — CI ${ci.checks}${ci.names ? `: ${ci.names}` : ""}`, ci };
     try {
       approvePr(pr);
       log(`[${label}] approved the PR — worker reported it clean but submitted no review`);
@@ -273,10 +305,11 @@ ${mention.text}
 ${contextBlock}
 Workflow:
 1. Run \`git fetch origin\`, then \`gh pr view ${pr.number} --json state,commits\` (and \`gh pr checkout ${pr.number}\` when it is still open). If the PR is already MERGED: check my reviews (\`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews\`) — when I approved it, or my findings were addressed before the merge, STOP with REVIEW_STATUS: resolved and a SLACK_REPLY that confirms the closure (e.g. "Already approved and merged — LGTM."). Closed WITHOUT merging, or merged with my real findings ignored: STOP with REVIEW_STATUS: skipped and say why.
-2. Establish what changed since my last review: \`gh api user --jq .login\` (me), \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews\` and \`.../pulls/${pr.number}/comments\` (my earlier findings), \`gh pr view ${pr.number} --json commits\`. If there are NO new commits since my last review and their reply points at nothing specific to look at, STOP: REVIEW_STATUS: skipped, and say in SLACK_REPLY that I found no new commits to re-check.
+2. Establish what changed since my last review: \`gh api user --jq .login\` (me), \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews\` and \`.../pulls/${pr.number}/comments\` (my earlier findings), \`gh pr view ${pr.number} --json commits\`. If there are NO new commits since my last review, their reply points at nothing specific to look at, and my last round did not withhold approval over red/pending CI, STOP: REVIEW_STATUS: skipped, and say in SLACK_REPLY that I found no new commits to re-check.
 3. Verify EACH of my earlier findings against the CURRENT code — is the problem actually fixed? Trace the code; never trust commit messages. Then review the new commits for NEW real problems with the same bar as the original review: bugs, regressions, lost data/functionality, broken API contracts, security issues, backward-compatibility breaks. SKIP minor issues entirely (style, naming, dead code, formatting). If unsure whether an issue is real, skip it.
 4. If an earlier finding is still broken or the update introduces a new real issue: post inline comments on the exact changed lines (RIGHT side), all in ONE review call — \`gh api repos/${pr.owner}/${pr.repo}/pulls/${pr.number}/reviews -f event=COMMENT --input <json>\` with a "comments" array of {path, line, side: "RIGHT", body}. Every comment includes the fix as a \`\`\`suggestion block or a short snippet; short basic English, prose under 200 characters per comment. Do NOT approve.
-5. If everything I flagged is fixed and nothing new is broken: post nothing and report REVIEW_COMMENTS: 0 — I submit the approving review myself from your report. Do NOT run an approve command. If I already approved AFTER their latest commit, report REVIEW_STATUS: resolved with a SLACK_REPLY confirming it is already approved.
+5. CI: run \`gh pr checks ${pr.number}\`. For EVERY failed check (lint, typecheck/tsc, tests, build) read its log (\`gh run view <run-id> --log-failed\`) and find the root cause. A failure caused by this PR is a real issue: post it as an inline comment on the offending changed line with the fix. A failure the diff did not cause (flaky test, base branch already red, infra) gets no comment — name it in SLACK_REPLY instead. A green diff with red CI is NOT clean: I never approve while any check is failing or still running.
+6. If everything I flagged is fixed and nothing new is broken: post nothing and report REVIEW_COMMENTS: 0 — I submit the approving review myself from your report. Do NOT run an approve command. If I already approved AFTER their latest commit, report REVIEW_STATUS: resolved with a SLACK_REPLY confirming it is already approved.
 
 End your final message with exactly these lines:
 REVIEW_STATUS: <reviewed | resolved | skipped — "reviewed" only if you evaluated the update's diff this run; "resolved" when there is nothing left to review AND the outcome is final and positive for the author (already approved, already merged with my findings addressed) — your SLACK_REPLY is then posted to the thread; "skipped" when you could not or should not act (closed without merge, no new commits, cannot review) — then SLACK_REPLY stays a private DM>
@@ -462,11 +495,12 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
       : "skipped";
   let note = null;
   // "resolved" already read GitHub to reach its verdict; a fresh re-review still has to be proven.
-  if (status === "reviewed") ({ status, note } = landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
+  let ci = null;
+  if (status === "reviewed") ({ status, note, ci = null } = await landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
   log(
     `[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} new comment(s))` : status === "resolved" ? ` — ${outcome.slackReply.slice(0, 120)}` : ""}`,
   );
-  return { pr, status, outcome, result, worktreePath, sessionId, note };
+  return { pr, status, outcome, result, worktreePath, sessionId, note, ci };
 }
 
 /**
@@ -480,6 +514,7 @@ export function buildFollowupThreadReply(answered) {
   if (answered.length === 1) {
     const r = answered[0];
     if (r.status === "resolved") return resolvedText(r);
+    if (r.ci) return ciHoldReply(r.ci);
     const c = r.outcome.commentCount;
     return c > 0 ? `Re-checked — left ${c} more comment${c === 1 ? "" : "s"} on the PR.` : "Re-checked the update — LGTM!";
   }
@@ -487,7 +522,7 @@ export function buildFollowupThreadReply(answered) {
     .map((r) => {
       if (r.status === "resolved") return `• #${r.pr.number} — ${resolvedText(r).slice(0, 120)}`;
       const c = r.outcome.commentCount;
-      return `• #${r.pr.number} — ${c > 0 ? `${c} more comment${c === 1 ? "" : "s"}` : "LGTM"}`;
+      return `• #${r.pr.number} — ${c > 0 ? `${c} more comment${c === 1 ? "" : "s"}` : r.ci ? `code OK, CI ${r.ci.checks}` : "LGTM"}`;
     })
     .join("\n")}`;
 }
@@ -577,9 +612,10 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   let status = !outcome.reviewed ? "skipped" : Number.isNaN(outcome.commentCount) ? "unparseable" : "reviewed";
   let note = null;
   // Never take the worker's word for a public action — reconcile it with GitHub first.
-  if (status === "reviewed") ({ status, note } = landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
+  let ci = null;
+  if (status === "reviewed") ({ status, note, ci = null } = await landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
   log(`[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} comment(s))` : ""}`);
-  return { pr, status, outcome, result, worktreePath, sessionId, note };
+  return { pr, status, outcome, result, worktreePath, sessionId, note, ci };
 }
 
 /**
@@ -621,10 +657,10 @@ export async function runPool(items, limit, worker) {
 /** The single thread reply for a batch. One PR keeps the original wording; several get a list. */
 export function buildThreadReply(reviewed) {
   if (!reviewed.length) return null;
-  if (reviewed.length === 1) return reviewed[0].outcome.threadReply;
+  if (reviewed.length === 1) return reviewed[0].ci ? ciHoldReply(reviewed[0].ci) : reviewed[0].outcome.threadReply;
   const lines = reviewed.map((r) => {
     const c = r.outcome.commentCount;
-    return `• #${r.pr.number} — ${c > 0 ? `${c} comment${c === 1 ? "" : "s"}` : "LGTM"}`;
+    return `• #${r.pr.number} — ${c > 0 ? `${c} comment${c === 1 ? "" : "s"}` : r.ci ? `code OK, CI ${r.ci.checks}${r.ci.names ? ` (${r.ci.names})` : ""}` : "LGTM"}`;
   });
   return `Reviewed ${reviewed.length} PRs:\n${lines.join("\n")}`;
 }

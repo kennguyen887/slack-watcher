@@ -9,6 +9,7 @@ import {
   reviewOutcome,
   verifyOutcome,
   buildThreadReply,
+  ciHoldReply,
   runPool,
   handlePrReview,
   matchReviewFollowup,
@@ -121,6 +122,21 @@ test("buildThreadReply: one PR keeps prose, several become a per-PR list, none �
     buildThreadReply(many),
     "Reviewed 3 PRs:\n• #2250 — 3 comments\n• #2249 — LGTM\n• #2246 — 1 comment",
   );
+});
+
+// A clean diff with a red lint/tsc pipeline used to answer "LGTM!" and get approved. Approval is now
+// held while CI is failing or still running, and the thread says why instead of LGTM.
+test("buildThreadReply: a clean diff held back by CI never reads as LGTM", () => {
+  const ci = { checks: "failed", names: "lint, typecheck" };
+  const held = [{ pr: { number: "10" }, ci, outcome: { commentCount: 0, threadReply: "LGTM!" } }];
+  assert.equal(buildThreadReply(held), ciHoldReply(ci));
+  assert.match(buildThreadReply(held), /CI is failing \(lint, typecheck\)/);
+  assert.doesNotMatch(buildThreadReply(held), /LGTM/);
+  assert.match(ciHoldReply({ checks: "pending", names: "" }), /still running/);
+
+  const many = [...held, { pr: { number: "11" }, outcome: { commentCount: 0 } }];
+  assert.equal(buildThreadReply(many), "Reviewed 2 PRs:\n• #10 — code OK, CI failed (lint, typecheck)\n• #11 — LGTM");
+  assert.equal(buildFollowupThreadReply([{ pr: { number: "10" }, status: "reviewed", ci, outcome: { commentCount: 0 } }]), ciHoldReply(ci));
 });
 
 // Regression (2026-08-24): the author replying "I updated them" in a review thread was classified
