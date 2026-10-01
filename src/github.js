@@ -26,8 +26,25 @@ export function parseAllPrUrls(text) {
 }
 
 /** Run gh with an explicit timeout — an unbounded CLI call would stall the daemon's poll loop. */
-function gh(args, timeoutMs = 60_000) {
-  return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs }).trim();
+function gh(args, timeoutMs = 60_000, cwd = undefined) {
+  return execFileSync("gh", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs }).trim();
+}
+
+/**
+ * Check a PR out inside `cwd` and return the branch it targets.
+ *
+ * The worker does this itself as its first step; doing it here too is what lets the deterministic
+ * half of the review run BEFORE the worker starts — `ocr delegate` needs the PR's head and its
+ * base ref present to resolve the merge-base range. `gh pr checkout` is idempotent, so the
+ * worker repeating it costs nothing.
+ * @returns {string} the PR's base branch (e.g. "rc")
+ */
+export function checkoutPr(pr, cwd) {
+  const base = JSON.parse(gh(["pr", "view", pr.url, "--json", "baseRefName"])).baseRefName;
+  gh(["pr", "checkout", String(pr.number)], 180_000, cwd);
+  // The base ref itself may be absent in a worktree created from a different branch.
+  execFileSync("git", ["-C", cwd, "fetch", "origin", base], { stdio: "ignore", timeout: 180_000 });
+  return base;
 }
 
 const PR_FIELDS = "state,isDraft,mergeable,mergeStateStatus,changedFiles,additions,deletions,statusCheckRollup";

@@ -22,6 +22,12 @@ if [[ -z "$CLAUDE_BIN" ]]; then
   echo "WARNING: claude CLI not found on PATH — the watcher needs it at runtime." >&2
 fi
 
+# Optional: reviews degrade to a plain diff read without it, they do not fail.
+if ! command -v ocr >/dev/null; then
+  echo "NOTE: ocr (Open Code Review) not found — PR reviews will run without a review spec." >&2
+  echo "      Install it with: npm install -g @alibaba-group/open-code-review" >&2
+fi
+
 # The watcher MUST run as a gui/<uid> LaunchAgent, never crontab: the claude CLI
 # reads its OAuth token from the login Keychain, which only the GUI session unlocks.
 # launchd does not inherit your shell PATH; bake in the dirs node/claude/gh/git live in.

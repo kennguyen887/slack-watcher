@@ -65,6 +65,13 @@ export function loadConfig() {
     workerClaudeArgs: (env.WORKER_CLAUDE_ARGS ?? "--dangerously-skip-permissions")
       .split(" ")
       .filter(Boolean),
+    // ── Open Code Review (github.com/alibaba/open-code-review) ──
+    // `ocr delegate` picks the PR's reviewable files and resolves a checklist per file; the
+    // review itself still runs on REVIEW_MODEL. Off switch only — a missing `ocr` already
+    // degrades to the plain diff review on its own (see src/ocr.js).
+    ocrEnabled: env.OCR_ENABLED !== "0" && env.OCR_ENABLED !== "false",
+    ocrBin: env.OCR_BIN || "ocr",
+    ocrRuleFile: env.OCR_RULE_FILE || path.join(BASE_DIR, "ocr", "rule.json"),
     contextWindowSeconds: intOption(env.CONTEXT_WINDOW_SECONDS, 900, { min: 0 }),
     workerTimeoutMs: intOption(env.WORKER_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     workerGraceMs: intOption(env.WORKER_GRACE_MINUTES, 3, { min: 0 }) * 60_000,

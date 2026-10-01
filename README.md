@@ -15,6 +15,31 @@ A personal Slack → Claude Code automation daemon. It watches Slack for message
 | "@you when do we deploy?" (a call only you can make) | DM'd to you with a draft; nothing is posted |
 | "thanks @you!" / FYI / status update | Ignored — nothing happens |
 
+### Review spec — what a model picks, versus what a pipeline picks
+
+A reviewer model handed "review this PR" is good at judging a change and bad at choosing what to
+look at: on a large diff it quietly reads some files and not others, and it judges each one against
+whatever bar it happens to recall. Those two steps are not model work, so the watcher runs
+[Open Code Review](https://github.com/alibaba/open-code-review)'s `ocr delegate` first — no model, no
+API key, a couple of seconds — and hands the worker:
+
+- **a closed file list** — the PR's changed files with tests, generated code, vendored trees,
+  lockfiles and secret paths already filtered out, so coverage is decided by a pipeline rather than
+  by attention, and the worker is told to cover every file on it;
+- **the checklist that applies to each file**, resolved per path from [`ocr/rule.json`](ocr/rule.json) —
+  frontend files get the request-count, bundle-bytes and hydration checks, backend files get N+1,
+  transaction, idempotency and bounds checks, migrations get idempotency and money-precision checks.
+
+`ocr/rule.json` **replaces** Open Code Review's built-in ruleset rather than extending it: the
+built-in rules ask for typos, dead code, duplication and `var`/`==` nits, which are exactly the
+comments this reviewer must never post. Frontend files additionally carry a hard "never ask for a
+test" rule — that frontend ships no unit tests on purpose.
+
+The review still runs on `REVIEW_MODEL` (opus by default), still posts inline comments on the exact
+changed lines, and still approves a clean PR. Nothing about the flow changes; the worker just starts
+from a resolved spec instead of an open-ended diff. Without `ocr` installed it falls back to reading
+the diff unaided — degraded, never broken.
+
 Built-in guardrails and quality-of-life:
 
 - **Near real-time without a server or admin rights** — polls Slack search with your own user token (default 45 s); no Slack app install to the workspace, runs on your machine via launchd (starts at login, auto-restarts).
@@ -35,6 +60,7 @@ Built-in guardrails and quality-of-life:
 - Node ≥ 18 (no npm dependencies)
 - [Claude Code CLI](https://claude.com/claude-code) (`claude`) logged in
 - [GitHub CLI](https://cli.github.com) (`gh`) logged in
+- *(Optional, recommended)* [Open Code Review](https://github.com/alibaba/open-code-review) — `npm install -g @alibaba-group/open-code-review`. Reviews work without it; see **Review spec** below for what it adds
 - A Slack **user token** (`xoxp-…`) — see below
 
 ## Setup
@@ -80,6 +106,9 @@ poll (45s) ──► search.messages: mentions of you  ──┐
               disposable git worktree from origin/<BASE_BRANCH>
                     (questions skip this — they only read)
                                                     ▼
+          reviews only: ocr delegate ──► file list + per-file checklist
+                   (no model, no API key — see "Review spec")
+                                                    ▼
         claude -p worker (streamed progress in console log) ──► draft PR /
         inline review comments / in-thread answer in your voice ──► result DM
 ```
@@ -116,7 +145,9 @@ One file = one concern; handlers split per mention kind, routed by a plain map.
 | `src/claude.js` | `claude -p` runner with streamed progress |
 | `src/git.js` | git exec + disposable worktree create/remove |
 | `src/repos.js` | Repo discovery + doc-sourced repo hints |
-| `src/github.js` | PR URL parsing |
+| `src/github.js` | PR URL parsing, PR/CI status, review reconciliation |
+| `src/ocr.js` | Open Code Review's `ocr delegate` → the review spec block (file list + checklist) |
+| `ocr/rule.json` | The review bar itself, per file type — what to report, what to stay silent about |
 | `src/send.js` | Manual send CLI |
 | `src/style.js` | Loads the learned voice (`style/profile.md`, gitignored) |
 | `src/style-learn.js` | `npm run learn-style` — harvests your own messages and distills the profile |

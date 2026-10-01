@@ -29,7 +29,7 @@ Mandatory workflow for this repository:
    - If existing work covers this request (open/merged PR, recent commit), STOP, make no changes, and put the existing PR/commit link in SLACK_DRAFT.
 4. Investigate the ROOT CAUSE before changing anything — do not ship a symptom patch. If at any point the request turns out to be too ambiguous to implement safely (unclear expected behavior, multiple plausible interpretations, can't reproduce), STOP and make no changes. In that case put the clarifying questions for the requester into SLACK_DRAFT (same language as the request) so I can send them back as-is.
 5. Implement the smallest correct change. Follow existing code style and the repository's own contribution rules (CLAUDE.md / CONTRIBUTING.md if present).
-6. Run the project's tests and lint; fix failures you introduced. A fresh worktree has no node_modules — install dependencies first (pnpm/npm per the repo's lockfile).
+6. Run the project's tests and lint; fix failures you introduced. A fresh worktree has no node_modules — install dependencies first (pnpm/npm per the repo's lockfile). Do NOT add a unit test file to frontend code (React/Next pages, components, hooks, stores) — that frontend ships none on purpose; verify a frontend change by running the app instead.
 7. Commit with a plain message describing the change. NEVER add AI attribution (no Co-Authored-By, no "Generated with" lines).
 8. Push the branch and open a DRAFT pull request targeting \`${base}\` using \`gh pr create --draft --base ${base}\`. The PR description should explain the change, reference the Slack request, and note anything unverified.
 
