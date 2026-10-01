@@ -32,8 +32,16 @@ API key, a couple of seconds — and hands the worker:
 
 `ocr/rule.json` **replaces** Open Code Review's built-in ruleset rather than extending it: the
 built-in rules ask for typos, dead code, duplication and `var`/`==` nits, which are exactly the
-comments this reviewer must never post. Frontend files additionally carry a hard "never ask for a
-test" rule — that frontend ships no unit tests on purpose.
+comments this reviewer must never post.
+
+Frontend unit tests are treated as weight the team decided not to carry. The reviewer never asks for
+one, never counts "this is untested" as a finding, and when a PR **adds** a frontend test file it
+posts a single comment asking for the file to be deleted. Backend suites are untouched by this: the
+`include`/`exclude` pair in `ocr/rule.json` splits them by where they live — a repo's own root
+`test/` or `tests/` directory is a backend suite and stays out of review entirely, while a frontend
+test sitting beside its source or under `__tests__/` is pulled back into scope so it can be flagged.
+A frontend test the PR only *modifies* is left alone; deleting a file the PR did not create is not
+that PR's job.
 
 The review still runs on `REVIEW_MODEL` (opus by default), still posts inline comments on the exact
 changed lines, and still approves a clean PR. Nothing about the flow changes; the worker just starts

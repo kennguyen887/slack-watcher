@@ -1,6 +1,8 @@
 {
   "_comment": "Review rules for Open Code Review (`ocr delegate`), passed with --rule so they apply to EVERY repo the watcher reviews. Entries are matched in order and the first match wins; each one REPLACES the built-in system rule for its files (merge_system_rule is left off on purpose). OCR's built-in ruleset asks for typos, dead code, duplication and var/==/ternary nits — exactly the comments this reviewer must never post — so it is replaced rather than merged.",
   "exclude": [
+    "test/**",
+    "tests/**",
     "**/*.snap",
     "**/dist/**",
     "**/build/**",
@@ -11,6 +13,18 @@
     "**/yarn.lock"
   ],
   "rules": [
+    {
+      "path": "**/__tests__/**",
+      "rule": "## This is a frontend test file\n\nThis frontend ships no unit tests on purpose — they are weight the team decided not to carry.\n\n### If this PR ADDS this file\nReport exactly ONE finding for it: ask for the file to be deleted. One short comment on its first\nadded line, and NO ```suggestion``` block — a suggestion cannot delete a file. Say that this\nfrontend keeps no unit tests and the file should be dropped from the PR. Nothing else about this\nfile: do not review its assertions, its mocks, its naming or its coverage.\n\n### If this PR only MODIFIES a file that already existed\nSay nothing. Deleting a file this PR did not create is not this PR's job.\n\n### If this repository is a backend or API service rather than a frontend app\nThis rule does not apply — say nothing about this file.\n\n### Either way\nA test is never evidence that the change works. Judge the source files on their own."
+    },
+    {
+      "path": "**/*.test.{ts,tsx,js,jsx}",
+      "rule": "## This is a frontend test file\n\nThis frontend ships no unit tests on purpose — they are weight the team decided not to carry.\n\n### If this PR ADDS this file\nReport exactly ONE finding for it: ask for the file to be deleted. One short comment on its first\nadded line, and NO ```suggestion``` block — a suggestion cannot delete a file. Say that this\nfrontend keeps no unit tests and the file should be dropped from the PR. Nothing else about this\nfile: do not review its assertions, its mocks, its naming or its coverage.\n\n### If this PR only MODIFIES a file that already existed\nSay nothing. Deleting a file this PR did not create is not this PR's job.\n\n### If this repository is a backend or API service rather than a frontend app\nThis rule does not apply — say nothing about this file.\n\n### Either way\nA test is never evidence that the change works. Judge the source files on their own."
+    },
+    {
+      "path": "**/*.spec.{ts,tsx,js,jsx}",
+      "rule": "## This is a frontend test file\n\nThis frontend ships no unit tests on purpose — they are weight the team decided not to carry.\n\n### If this PR ADDS this file\nReport exactly ONE finding for it: ask for the file to be deleted. One short comment on its first\nadded line, and NO ```suggestion``` block — a suggestion cannot delete a file. Say that this\nfrontend keeps no unit tests and the file should be dropped from the PR. Nothing else about this\nfile: do not review its assertions, its mocks, its naming or its coverage.\n\n### If this PR only MODIFIES a file that already existed\nSay nothing. Deleting a file this PR did not create is not this PR's job.\n\n### If this repository is a backend or API service rather than a frontend app\nThis rule does not apply — say nothing about this file.\n\n### Either way\nA test is never evidence that the change works. Judge the source files on their own."
+    },
     {
       "path": "**/*.{tsx,jsx}",
       "rule": "## Report only\nDefects a user or caller would feel: wrong data on screen, a crash, lost functionality, a broken API contract, a security hole, a backward-compatibility break, state leaking across requests or renders.\n\n## Say nothing about\nStyle, naming, formatting, duplication, dead code (a prop/field/variable declared but never read IS dead code — stay silent), log wording, missing comments, `var`/`==`/nested ternaries, typos that change no behaviour, \"consider extracting\". Unsure whether it is real? Say nothing.\n\n## Never ask for tests\nThis frontend deliberately ships no unit tests. Never ask for a test, never propose creating a `*.test.*` / `*.spec.*` / `__tests__` file, and never call a change untested. Prove the defect from the code itself.\n\n## Frontend-specific defects worth a comment\n- **Request count.** A `useEffect` dep array holding the effect's own output (it sets `x` and depends on `x`) — that is a fetch loop. An object dep where a primitive exists (`user` instead of `user?.id`) — it refires on every identity change. A boolean whose initial value already satisfies the branch, so the effect fires on mount.\n- **Polls.** `enabled` gating on the presence of data (`Boolean(lease)`) instead of on the pending transition it waits for; a stop condition that misses a reachable terminal state; no pause on a hidden tab; no maximum duration. A poll that cannot stop is an unbounded loop against your own API.\n- **Two owners for one resource.** Parent and child both calling the same self-fetching hook is two requests, not shared state.\n- **A comment that states the gate is the spec** — diff it against the code; when they disagree, the comment is the intent and the code is the bug.\n- **Bytes on the wire.** A bundled dataset, generated file or API response whose fields nothing reads; a dynamic import of a large JSON to read one key. Cost it in KB (minified and gzipped) and rows in the comment.\n- **Render and lifecycle.** Side effects during render, hooks called conditionally, a missing cleanup, a stale closure over props/state.\n- **SSR/hydration.** `window`/`document`/`localStorage` touched during server render; per-request state held in module scope or a static field of a shared service — it leaks across renders and requests.\n\n## Every finding\nName the exact changed line, the user-visible impact, and the fix as code."
@@ -27,5 +41,10 @@
       "path": "**/*",
       "rule": "## Report only\nDefects a user, caller or operator would feel: wrong results, a crash, data loss, lost functionality, a broken contract, a security hole, a backward-compatibility break, a secret committed, an unbounded or unguarded operation. Judge the change against this repository's own conventions, read from the surrounding files.\n\n## Say nothing about\nStyle, naming, formatting, duplication, dead code, log wording, missing comments, typos that change no behaviour, \"consider extracting\". Unsure whether it is real? Say nothing.\n\n## Never ask for tests on frontend code\nIf the change belongs to a frontend app, never ask for a test and never propose creating a `*.test.*` / `*.spec.*` file — that frontend deliberately ships no unit tests.\n\n## Every finding\nName the exact changed line, the user-visible impact, and the fix as code."
     }
+  ],
+  "include": [
+    "**/__tests__/**",
+    "**/*.test.{ts,tsx,js,jsx}",
+    "**/*.spec.{ts,tsx,js,jsx}"
   ]
 }
