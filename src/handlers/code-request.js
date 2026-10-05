@@ -4,7 +4,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, minutes, newSessionId, resumeHint, showInDesktopApp, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, minutes, newSessionId, resumeHint, sessionTitle, showInDesktopApp, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -123,6 +123,7 @@ export async function handleCodeRequest(ctx) {
       label: classification.repo,
       signal: controller.signal,
       sessionId,
+      name: sessionTitle(`Code ${classification.repo}`, classification.summary),
     });
   } catch (err) {
     if (err instanceof CancelledError) {

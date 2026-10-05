@@ -19,7 +19,7 @@ export class CancelledError extends Error {
   }
 }
 
-export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal, sessionId, resumeSessionId }) {
+export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal, sessionId, resumeSessionId, name }) {
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", ...extraArgs];
   if (model) args.push("--model", model);
   // resumeSessionId continues an EARLIER worker session (must run from that session's cwd) —
@@ -27,7 +27,14 @@ export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], 
   // Otherwise a caller-chosen session id makes the headless run resumable afterwards:
   // `claude --resume <sessionId>` (from the same cwd) reopens it interactively.
   if (resumeSessionId) args.push("--resume", resumeSessionId);
-  else if (sessionId) args.push("--session-id", sessionId);
+  else if (sessionId) {
+    args.push("--session-id", sessionId);
+    // `--name` is the session's display title: the CLI records it in the transcript and the
+    // Claude desktop app shows it when the session is imported (showInDesktopApp). Without it
+    // an imported worker session is a blank row that only its worktree folder name identifies.
+    // New sessions only — a resumed session keeps the title it already has.
+    if (name) args.push("--name", name);
+  }
 
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });

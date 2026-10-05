@@ -29,9 +29,9 @@ export function git(repoPath, ...args) {
  * @returns {{ worktreePath: string, base: string }} base = the branch actually checked out
  */
 export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch) {
-  // "auto-" marks the session as watcher-spawned in the Claude desktop app's
-  // session list: imported CLI sessions have no title (the app exposes no way
-  // to set one from outside), so the list shows this directory name instead.
+  // "auto-" marks the directory as watcher-spawned (git worktree list, the DM's resume hint,
+  // and the Claude desktop app, which groups sessions by their folder). The session's own
+  // title comes from `claude --name` (runClaude), not from this name.
   const worktreePath = path.join(worktreesDir, `auto-${repoName}-${ts.replace(".", "-")}`);
   // Pull the latest for ALL branches (+prune deleted remotes) so the fix always starts from
   // the CURRENT tip of the base branch (RC/master). We check the worktree out DETACHED at

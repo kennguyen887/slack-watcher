@@ -446,7 +446,7 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
       model: config.reviewModel,
       label,
       signal: controller.signal,
-      ...(resume ? { resumeSessionId: resume } : { sessionId }),
+      ...(resume ? { resumeSessionId: resume } : { sessionId, name: `Re-review ${pr.repo} PR #${pr.number}` }),
     });
 
   let result;
@@ -627,6 +627,7 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
       label,
       signal: controller.signal,
       sessionId,
+      name: `Review ${pr.repo} PR #${pr.number}`,
     });
   } catch (err) {
     if (err instanceof CancelledError) {

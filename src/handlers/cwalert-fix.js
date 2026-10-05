@@ -2,7 +2,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { waitForChecks, mergePr } from "../github.js";
 import { log } from "../log.js";
-import { minutes, newSessionId, resumeHint, showInDesktopApp, trim, watchForStop } from "./shared.js";
+import { minutes, newSessionId, resumeHint, sessionTitle, showInDesktopApp, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -168,6 +168,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       label: `cwalert:${repo}`,
       signal: controller.signal,
       sessionId,
+      name: sessionTitle(`Auto-fix ${repo}`, `${event.service} ${event.severity}`),
     });
   } catch (err) {
     if (err instanceof CancelledError) {

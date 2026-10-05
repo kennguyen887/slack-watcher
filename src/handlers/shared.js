@@ -51,6 +51,16 @@ export function threadTsOf(mention) {
 /** Session id handed to `claude -p --session-id`, so the worker's run shows up in Claude Code and can be reopened. */
 export const newSessionId = () => crypto.randomUUID();
 
+/**
+ * Display title for a worker session (`claude --name`): "<what> — <one-line detail>", cut to
+ * one sidebar row. The detail is a Slack summary or an alert line, so it is squashed to one line.
+ */
+export function sessionTitle(what, detail = "", max = 80) {
+  const line = String(detail).replace(/\s+/g, " ").trim();
+  const title = line ? `${what} — ${line}` : what;
+  return title.length > max ? `${title.slice(0, max - 1)}…` : title;
+}
+
 /** Copy-paste command that reopens a worker's session interactively, in its kept worktree. */
 export const resumeHint = (worktreePath, sessionId) => `\`cd ${worktreePath} && claude --resume ${sessionId}\``;
 
