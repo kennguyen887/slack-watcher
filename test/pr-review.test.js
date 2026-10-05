@@ -12,6 +12,7 @@ import {
   ciHoldReply,
   runPool,
   handlePrReview,
+  prsRequestedBy,
   matchReviewFollowup,
   buildFollowupThreadReply,
   handlePrReviewFollowup,
@@ -270,6 +271,35 @@ test("handlePrReviewFollowup runs its entry path — vanished worktree + missing
 // parsePrUrl, so EVERY review request died with "parseAllPrUrls is not defined" — 7 PRs silently
 // dropped over a day. Driving the handler's entry (the no-PR-link bail is the one path that stops
 // before claude/git) is what catches an undefined free variable; the pure-function tests cannot.
+// Regression (2026-10-05): a top-level "PR for review: #2527" swept up #69 and #70 from other
+// teammates' channel messages minutes earlier, and its thread got "Reviewed 2 PRs: #2527, #70".
+test("prsRequestedBy: a review covers the mention's own PRs, else its thread's, else the requester's — never a neighbour's", () => {
+  const pr = (n, repo = "commonground") => `https://github.com/Farmers-National/${repo}/pull/${n}`;
+  const urls = (prs) => prs.map((p) => p.url);
+  const channel = {
+    kind: "channel",
+    messages: [
+      { user: "U_nam", ts: "1.0", text: `PR for review: <${pr(69, "groundos-web")}>` },
+      { user: "U_tai", ts: "2.0", text: `PR for review: <${pr(2527)}>` },
+      { user: "U_nam", ts: "3.0", text: `Xin review PR <${pr(70, "groundos-web")}>` },
+    ],
+  };
+
+  // 1. Own link wins — the neighbours' PRs in the channel window are not this thread's business.
+  assert.deepEqual(urls(prsRequestedBy({ user: "U_tai", text: `PR for review: <${pr(2527)}>` }, channel)), [pr(2527)]);
+  // 3. No link in a top-level message → only the REQUESTER's other messages, in order, deduped.
+  assert.deepEqual(urls(prsRequestedBy({ user: "U_nam", text: "<@U_me> review please" }, channel)), [
+    pr(69, "groundos-web"),
+    pr(70, "groundos-web"),
+  ]);
+  // 2. No link in a thread reply → whatever that thread links (the root's PR), whoever posted it.
+  const thread = { kind: "thread", messages: [{ user: "U_tai", ts: "2.0", text: `PR <${pr(2527)}>` }, { user: "U_nam", ts: "2.5", text: "<@U_me> ptal" }] };
+  assert.deepEqual(urls(prsRequestedBy({ user: "U_nam", text: "<@U_me> ptal" }, thread)), [pr(2527)]);
+  // Nothing anywhere → empty, so the handler falls to its "no PR link found" self-DM.
+  assert.deepEqual(prsRequestedBy({ user: "U_x", text: "hi" }, channel), []);
+  assert.deepEqual(prsRequestedBy({ user: "U_x", text: "hi" }, undefined), []);
+});
+
 test("handlePrReview runs its entry path — a message with no PR link bails, it does not throw", async () => {
   const posted = [];
   const ctx = {

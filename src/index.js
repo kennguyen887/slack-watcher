@@ -104,7 +104,7 @@ async function processMention(mention, repos, config, slack, selfId) {
 
   const handler = HANDLERS[classification.kind];
   const result = handler
-    ? await handler({ mention, classification, contextBlock, config, slack, selfId })
+    ? await handler({ mention, classification, contextBlock, context, config, slack, selfId })
     : { status: "ignored" };
   return { classification, result };
 }

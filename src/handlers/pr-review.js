@@ -162,10 +162,37 @@ async function landReview({ pr, outcome, label, since }) {
   return check.mismatch ? { status: "unverified", note: check.mismatch } : { status: "reviewed", note: null };
 }
 
+/**
+ * The PRs ONE mention asks me to review. The thread reply lands under that mention, so the set
+ * must be what that conversation is about — never a PR somebody else posted nearby in the
+ * channel. Precedence:
+ *   1. PR links in the mention's own text (one message often lists several — review EVERY one).
+ *   2. None there and it is a thread reply → the PRs linked anywhere in that thread (the link in
+ *      the root, "@me review please" as a reply).
+ *   3. None there and it is a top-level message → the REQUESTER's own messages in the context
+ *      window (they often split one request over several short messages); other people's
+ *      messages never count.
+ * The classifier's prUrl is deliberately NOT a fallback: it reads the same context block, so
+ * its pick can be another teammate's PR — the exact leak this guards against. No link anywhere
+ * → the "no PR link found" self-DM, which is visible and recoverable; a review posted into the
+ * wrong thread is not.
+ * Regression (2026-10-05): the set was parsed from the WHOLE context block, so a top-level
+ * "PR for review: #2527" swept up two other teammates' PRs posted minutes earlier in the
+ * channel, reviewed all three under that mention, and answered its thread with "Reviewed 2 PRs:
+ * #2527, #70" — while #70's own message got no reply at all. Every later "I updated them" in
+ * that thread then re-checked all three.
+ */
+export function prsRequestedBy(mention, context) {
+  const own = parseAllPrUrls(mention.text ?? "");
+  if (own.length) return own;
+  const messages = context?.messages ?? [];
+  const scoped = context?.kind === "thread" ? messages : messages.filter((m) => m.user === mention.user);
+  return parseAllPrUrls(scoped.map((m) => m.text ?? "").join("\n"));
+}
+
 export async function handlePrReview(ctx) {
-  const { mention, classification, contextBlock, config, slack, selfId } = ctx;
-  // One Slack message often lists several PRs — review EVERY one, not just the first.
-  const prs = parseAllPrUrls(`${classification.prUrl ?? ""}\n${mention.text ?? ""}\n${contextBlock}`);
+  const { mention, classification, context, config, slack, selfId } = ctx;
+  const prs = prsRequestedBy(mention, context);
   if (!prs.length) {
     await slack.postToSelf(
       selfId,
