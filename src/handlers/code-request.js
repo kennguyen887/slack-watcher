@@ -4,7 +4,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, minutes, newSessionId, resumeHint, sessionTitle, showInDesktopApp, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, minutes, newSessionId, resumeCommand, resumeHint, sessionTitle, showInDesktopApp, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -93,7 +93,7 @@ export async function handleCodeRequest(ctx) {
     `:hammer_and_wrench: *Coding now* — *${classification.repo}* / \`${branchName}\`\n` +
       `> ${classification.summary}\n` +
       `Worktree ready from fresh \`origin/${base}\`. Next update: result DM (draft PR, stop reason, or timeout after ${minutes(config.workerTimeoutMs)} min). Progress heartbeat every 5 min in \`logs/watcher.log\`.\n` +
-      `:technologist: Pick it up in Claude Code afterwards (any outcome): ${resumeHint(worktreePath, sessionId)}`,
+      `:technologist: Pick it up in Claude Code afterwards (any outcome): ${resumeHint(config.workerSessionsDir, sessionId, worktreePath)}`,
   );
   const heartbeat = setInterval(
     () => log(`[${classification.repo}] worker still running (${minutes(Date.now() - startedAt)} min elapsed)`),
@@ -116,7 +116,8 @@ export async function handleCodeRequest(ctx) {
     result = await runClaude({
       bin: config.claudeBin,
       prompt: workerPrompt(ctx, branchName, base, attachmentsBlock),
-      cwd: worktreePath,
+      cwd: config.workerSessionsDir,
+      workdir: worktreePath,
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.workerModel,
@@ -142,7 +143,7 @@ export async function handleCodeRequest(ctx) {
     // Any non-cancelled outcome (done, timeout, crash) keeps the worktree: the
     // session is resumable in Claude Code exactly where the worker stopped.
     if (!discarded) {
-      log(`[${classification.repo}] worker finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      log(`[${classification.repo}] worker finished after ${minutes(Date.now() - startedAt)} min — resume: ${resumeCommand(config.workerSessionsDir, sessionId, worktreePath)}`);
       showInDesktopApp(sessionId);
     }
   }
@@ -161,7 +162,7 @@ export async function handleCodeRequest(ctx) {
     selfId,
     trim(
       `${header}\n> ${classification.summary}\nOriginal: ${mention.permalink ?? "n/a"}` +
-        `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(worktreePath, sessionId)}` +
+        `\n:technologist: Session is in the Claude desktop app now — or in terminal: ${resumeHint(config.workerSessionsDir, sessionId, worktreePath)}` +
         (slackDraft ? `\n\nDraft reply for the requester:\n${slackDraft}` : "") +
         (prUrl === "none" ? `\n\nWorker output:\n${result}` : ""),
     ),

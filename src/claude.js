@@ -19,9 +19,28 @@ export class CancelledError extends Error {
   }
 }
 
-export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal, sessionId, resumeSessionId, name }) {
+/**
+ * System-prompt line that moves a worker into its worktree. Workers START in one shared
+ * directory (config.workerSessionsDir) rather than in their worktree: the Claude desktop app
+ * files an imported session under the folder it started in, so a per-worktree start gave every
+ * review its own `auto-<repo>-<ts>` sidebar group. The worktree is reached through --add-dir
+ * instead, and this line makes the shell go there before anything else runs.
+ */
+export const workdirInstruction = (workdir) =>
+  `Your task's working directory is ${workdir} (an isolated git worktree of the repository). ` +
+  `Your FIRST tool call must be the Bash command: cd ${workdir} — every file path, search, git, gh and test command ` +
+  `for this task runs there, never in the directory this session started in.`;
+
+export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal, sessionId, resumeSessionId, name, workdir }) {
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", ...extraArgs];
   if (model) args.push("--model", model);
+  let env = process.env;
+  if (workdir) {
+    // --add-dir is variadic: it must be followed by another flag, never by a positional value.
+    args.push("--add-dir", workdir, "--append-system-prompt", workdirInstruction(workdir));
+    // The repo's CLAUDE.md lives in the worktree, which is now an added dir, not the cwd.
+    env = { ...process.env, CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
+  }
   // resumeSessionId continues an EARLIER worker session (must run from that session's cwd) —
   // used by review follow-ups so the worker keeps the context of its own prior review.
   // Otherwise a caller-chosen session id makes the headless run resumable afterwards:
@@ -37,7 +56,7 @@ export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], 
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let buffer = "";
     let result = null;
     let stderr = "";

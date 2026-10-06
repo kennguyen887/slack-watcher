@@ -61,8 +61,16 @@ export function sessionTitle(what, detail = "", max = 80) {
   return title.length > max ? `${title.slice(0, max - 1)}…` : title;
 }
 
-/** Copy-paste command that reopens a worker's session interactively, in its kept worktree. */
-export const resumeHint = (worktreePath, sessionId) => `\`cd ${worktreePath} && claude --resume ${sessionId}\``;
+/**
+ * Command that reopens a worker's session interactively. A transcript is keyed by the directory
+ * the session STARTED in (the shared sessions dir; a worktree for sessions older than that), so
+ * the `cd` goes there, and --add-dir brings the kept worktree back in reach.
+ */
+export const resumeCommand = (sessionCwd, sessionId, worktreePath) =>
+  `cd ${sessionCwd} && claude --resume ${sessionId}${worktreePath && worktreePath !== sessionCwd ? ` --add-dir ${worktreePath}` : ""}`;
+
+/** resumeCommand, formatted for a Slack DM. */
+export const resumeHint = (...args) => `\`${resumeCommand(...args)}\``;
 
 /**
  * Surface a finished worker session in the Claude desktop app (macOS): the app's

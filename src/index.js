@@ -171,6 +171,7 @@ async function main() {
   const once = process.argv.includes("--once");
   const config = loadConfig();
   fs.mkdirSync(config.logDir, { recursive: true });
+  fs.mkdirSync(config.workerSessionsDir, { recursive: true });
 
   // Worktrees outlive their worker so sessions stay resumable — reap old ones here.
   try {

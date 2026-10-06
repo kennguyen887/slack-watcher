@@ -121,6 +121,10 @@ export function loadConfig() {
       autoMergeChecksTimeoutMs: intOption(env.CWALERT_AUTOMERGE_CHECKS_TIMEOUT_MIN, 10, { min: 1 }) * 60_000,
     },
     worktreesDir: path.join(BASE_DIR, "worktrees"),
+    // Where every worker session STARTS (its worktree comes in via --add-dir). One folder = one
+    // sidebar group in the Claude desktop app. Must sit outside any git repo, so a command run
+    // before the worker's `cd` fails loudly instead of touching another checkout.
+    workerSessionsDir: path.resolve(env.WORKER_SESSIONS_DIR || path.join(BASE_DIR, "..", "slack-bot")),
     attachmentsDir: path.join(BASE_DIR, "attachments"),
     stateFile: path.join(BASE_DIR, "state.json"),
     historyFile: path.join(BASE_DIR, "history.jsonl"),

@@ -5,7 +5,7 @@ import { prepareAttachments } from "../attachments.js";
 import { approvePr, checkoutPr, myReviewState, parseAllPrUrls, parsePrUrl, waitForChecks } from "../github.js";
 import { log } from "../log.js";
 import { reviewSpec } from "../ocr.js";
-import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, detectLang, minutes, newSessionId, resumeCommand, resumeHint, showInDesktopApp, threadTsOf, trim, watchForStop } from "./shared.js";
 
 function reviewPrompt({ mention, contextBlock }, pr, attachmentsBlock, ocrBlock = "") {
   // The first line becomes the session's title in the Claude desktop app (it copies the opening
@@ -256,6 +256,7 @@ export async function handlePrReview(ctx) {
       status: r.status,
       comments: r.outcome && !Number.isNaN(r.outcome.commentCount) ? r.outcome.commentCount : null,
       sessionId: r.sessionId ?? null,
+      sessionCwd: r.sessionCwd ?? null,
       worktreePath: r.worktreePath ?? null,
     })),
     repliedInThread,
@@ -413,6 +414,7 @@ export async function handlePrReviewFollowup(ctx) {
       status: r.status,
       comments: r.outcome && !Number.isNaN(r.outcome.commentCount) ? r.outcome.commentCount : null,
       sessionId: r.sessionId ?? r.pr.sessionId ?? null,
+      sessionCwd: r.sessionCwd ?? r.pr.sessionCwd ?? null,
       worktreePath: r.worktreePath ?? r.pr.worktreePath ?? null,
     })),
     repliedInThread,
@@ -431,6 +433,9 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
 
   let worktreePath = pr.worktreePath;
   let resumeSessionId = pr.sessionId;
+  // Where the transcript lives: recorded for sessions started in the shared sessions dir; an
+  // older session started inside its worktree.
+  const sessionCwd = pr.sessionCwd ?? pr.worktreePath;
   let createdFresh = false;
   let repoPath = null;
   if (!worktreePath || !fs.existsSync(worktreePath)) {
@@ -450,24 +455,29 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
       return { pr, status: "worktree_failed", error: err.message };
     }
     createdFresh = true;
-    resumeSessionId = null; // session transcripts are keyed by cwd — a new worktree needs a new session
+    // A transcript is keyed by the dir its session started in. One started in the shared dir
+    // resumes from there with the NEW worktree; an older one lived in the pruned worktree.
+    if (!pr.sessionCwd) resumeSessionId = null;
   }
 
   let sessionId = resumeSessionId ?? newSessionId();
+  // A fresh session always starts in the shared dir; a resumed one where it first started.
+  const cwdFor = (resume) => (resume ? sessionCwd : config.workerSessionsDir);
   const startedAt = Date.now();
   log(
     `[${label}] re-reviewing PR #${pr.number} (${resumeSessionId ? "resuming session" : "fresh session"} ${sessionId}, timeout ${minutes(config.reviewTimeoutMs)} min)`,
   );
   await slack.postToSelf(
     selfId,
-    `:repeat: *Re-reviewing now* — ${pr.url} (timeout ${minutes(config.reviewTimeoutMs)} min)\n:technologist: ${resumeHint(worktreePath, sessionId)}`,
+    `:repeat: *Re-reviewing now* — ${pr.url} (timeout ${minutes(config.reviewTimeoutMs)} min)\n:technologist: ${resumeHint(cwdFor(resumeSessionId), sessionId, worktreePath)}`,
   );
 
   const run = (resume) =>
     runClaude({
       bin: config.claudeBin,
       prompt: followupPrompt(ctx, pr),
-      cwd: worktreePath,
+      cwd: cwdFor(resume),
+      workdir: worktreePath,
       timeoutMs: config.reviewTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.reviewModel,
@@ -508,7 +518,7 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
     throw err;
   } finally {
     if (!discarded) {
-      log(`[${label}] finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      log(`[${label}] finished after ${minutes(Date.now() - startedAt)} min — resume: ${resumeCommand(cwdFor(resumeSessionId), sessionId, worktreePath)}`);
       showInDesktopApp(sessionId);
     }
   }
@@ -528,7 +538,7 @@ async function followupOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   log(
     `[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} new comment(s))` : status === "resolved" ? ` — ${outcome.slackReply.slice(0, 120)}` : ""}`,
   );
-  return { pr, status, outcome, result, worktreePath, sessionId, note, ci };
+  return { pr, status, outcome, result, worktreePath, sessionId, sessionCwd: cwdFor(resumeSessionId), note, ci };
 }
 
 /**
@@ -624,7 +634,7 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   await slack.postToSelf(
     selfId,
     `:mag: *Reviewing now* — ${pr.url} (timeout ${minutes(config.reviewTimeoutMs)} min)\n` +
-      `:technologist: ${resumeHint(worktreePath, sessionId)}`,
+      `:technologist: ${resumeHint(config.workerSessionsDir, sessionId, worktreePath)}`,
   );
 
   const { block: attachmentsBlock } = await prepareAttachments({
@@ -647,7 +657,8 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
     result = await runClaude({
       bin: config.claudeBin,
       prompt: reviewPrompt(ctx, pr, attachmentsBlock, ocrBlock),
-      cwd: worktreePath,
+      cwd: config.workerSessionsDir,
+      workdir: worktreePath,
       timeoutMs: config.reviewTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.reviewModel,
@@ -670,7 +681,7 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   } finally {
     // Any non-cancelled outcome keeps the worktree — the session stays resumable in Claude Code.
     if (!discarded) {
-      log(`[${label}] finished after ${minutes(Date.now() - startedAt)} min — resume: cd ${worktreePath} && claude --resume ${sessionId}`);
+      log(`[${label}] finished after ${minutes(Date.now() - startedAt)} min — resume: ${resumeCommand(config.workerSessionsDir, sessionId, worktreePath)}`);
       showInDesktopApp(sessionId);
     }
   }
@@ -682,7 +693,7 @@ async function reviewOnePr({ ctx, pr, controller, gitMutex = (fn) => fn() }) {
   let ci = null;
   if (status === "reviewed") ({ status, note, ci = null } = await landReview({ pr, outcome, label, since: sinceIso(startedAt) }));
   log(`[${label}] result: ${status}${status === "reviewed" ? ` (${outcome.commentCount} comment(s))` : ""}`);
-  return { pr, status, outcome, result, worktreePath, sessionId, note, ci };
+  return { pr, status, outcome, result, worktreePath, sessionId, sessionCwd: config.workerSessionsDir, note, ci };
 }
 
 /**
