@@ -74,7 +74,7 @@ Built-in guardrails and quality-of-life:
 
 ## Setup
 
-1. **Slack token**: create an app at api.slack.com/apps → OAuth & Permissions → **User Token Scopes**: `search:read`, `chat:write` (required) + `channels:history`, `groups:history`, `im:history`, `mpim:history` (conversation context) + `files:read` (read attached screenshots/logs) + `users:read` (DM by username via `send.js`) → Install to Workspace → copy the **User OAuth Token**. Step-by-step guide with official links: [docs/slack-token-guide.md](docs/slack-token-guide.md).
+1. **Slack token**: create an app at api.slack.com/apps → OAuth & Permissions → **User Token Scopes**: `search:read`, `chat:write` (required) + `channels:history`, `groups:history`, `im:history`, `mpim:history` (conversation context) + `files:read` (read attached screenshots/logs) + `users:read` (DM by username via `send.js`) → Install to Workspace → copy the **User OAuth Token**. Step-by-step guide with official links: [docs/slack-user-token-xoxp-how-to-create-it-and-use-it-in-node-js.md](docs/slack-user-token-xoxp-how-to-create-it-and-use-it-in-node-js.md).
 2. ```bash
    cp .env.example .env   # set SLACK_USER_TOKEN, BASE_BRANCH, PR_SEARCH_QUERY, ...
    ```

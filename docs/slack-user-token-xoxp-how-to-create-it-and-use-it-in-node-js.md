@@ -6,17 +6,17 @@ This guide covers getting the `SLACK_USER_TOKEN` that slack-watcher needs, and t
 
 Official guides:
 
-| What | Link |
-|---|---|
-| Quickstart: create an app, request scopes, install, get tokens | https://api.slack.com/quickstart |
-| App management page | https://api.slack.com/apps |
-| Token types explained (bot `xoxb` vs user `xoxp`) | https://api.slack.com/concepts/token-types |
-| All available scopes | https://api.slack.com/scopes |
-| OAuth flow in depth (install / reinstall mechanics) | https://api.slack.com/authentication/oauth-v2 |
+| What                                                           | Link                                            |
+| -------------------------------------------------------------- | ----------------------------------------------- |
+| Quickstart: create an app, request scopes, install, get tokens | <https://api.slack.com/quickstart>              |
+| App management page                                            | <https://api.slack.com/apps>                    |
+| Token types explained (bot `xoxb` vs user `xoxp`)              | <https://api.slack.com/concepts/token-types>    |
+| All available scopes                                           | <https://api.slack.com/scopes>                  |
+| OAuth flow in depth (install / reinstall mechanics)            | <https://api.slack.com/authentication/oauth-v2> |
 
 Steps:
 
-1. Go to https://api.slack.com/apps → **Create New App** → **From scratch** → pick your workspace.
+1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch** → pick your workspace.
 2. Open **OAuth & Permissions** → scroll to **Scopes** → add scopes under **User Token Scopes** (⚠️ not Bot Token Scopes — only user scopes produce an `xoxp-…` token):
    - `search:read` — find messages that mention you (required)
    - `chat:write` — post messages as you (required)
@@ -33,7 +33,7 @@ Keep the token in a gitignored `.env` file. It can do anything you can do on Sla
 
 ### Option A — official SDK (`@slack/web-api`)
 
-Docs: https://tools.slack.dev/node-slack-sdk/web-api/ · GitHub: https://github.com/slackapi/node-slack-sdk
+Docs: <https://tools.slack.dev/node-slack-sdk/web-api/> · GitHub: <https://github.com/slackapi/node-slack-sdk>
 
 ```js
 import { WebClient } from "@slack/web-api";
@@ -48,7 +48,7 @@ const res = await slack.search.messages({ query: "<@U123ABC>" });
 
 ### Option B — no dependencies, plain `fetch` (what slack-watcher does)
 
-The Web API is just HTTPS + a Bearer token. See [`src/slack.js`](../src/slack.js) for a full client with 429 retry.
+The Web API is just HTTPS + a Bearer token. See `src/slack.js` for a full client with 429 retry.
 
 ```js
 const res = await fetch("https://slack.com/api/chat.postMessage", {
@@ -74,17 +74,17 @@ const search = await fetch(`https://slack.com/api/search.messages?${qs}`, {
 
 ### Method reference
 
-Every API method is documented at https://api.slack.com/methods — each page lists required scopes, params, and sample responses. The ones this project uses:
+Every API method is documented at <https://api.slack.com/methods> — each page lists required scopes, params, and sample responses. The ones this project uses:
 
-- https://api.slack.com/methods/search.messages
-- https://api.slack.com/methods/chat.postMessage
-- https://api.slack.com/methods/conversations.history
-- https://api.slack.com/methods/conversations.replies
-- https://api.slack.com/methods/auth.test
+- <https://api.slack.com/methods/search.messages>
+- <https://api.slack.com/methods/chat.postMessage>
+- <https://api.slack.com/methods/conversations.history>
+- <https://api.slack.com/methods/conversations.replies>
+- <https://api.slack.com/methods/auth.test>
 
 ## Gotchas
 
 - `search.messages` rejects bot tokens — you need `xoxp` with `search:read`.
 - Slack search renders mentions as `<@U123|Display Name>`, not bare `<@U123>` — match both.
-- Rate limits are per-method tiers (https://api.slack.com/apis/rate-limits); on HTTP 429, wait `Retry-After` seconds and retry.
+- Rate limits are per-method tiers (<https://api.slack.com/apis/rate-limits>); on HTTP 429, wait `Retry-After` seconds and retry.
 - Messages posted with a user token appear **as you** — there is no bot identity.
