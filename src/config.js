@@ -120,6 +120,15 @@ export function loadConfig() {
       autoMergeMaxLines: intOption(env.CWALERT_AUTOMERGE_MAX_LINES, 200, { min: 1 }),
       autoMergeChecksTimeoutMs: intOption(env.CWALERT_AUTOMERGE_CHECKS_TIMEOUT_MIN, 10, { min: 1 }) * 60_000,
     },
+    dailyReport: {
+      enabled: env.DAILY_REPORT_ENABLED === "1" || env.DAILY_REPORT_ENABLED === "true",
+      channel: env.DAILY_REPORT_CHANNEL || "",
+      // Post time = thread open + uniform(min..max) minutes: never a fixed minute.
+      minMinutes: intOption(env.DAILY_REPORT_MIN_MINUTES, 10, { min: 0 }),
+      maxMinutes: intOption(env.DAILY_REPORT_MAX_MINUTES, 120, { min: 1 }),
+      // Local-time hours [from, to) in which the job may act (Mon–Fri only).
+      window: (env.DAILY_REPORT_WINDOW || "14-21").split("-").map((n) => Number.parseInt(n, 10)),
+    },
     worktreesDir: path.join(BASE_DIR, "worktrees"),
     // Where every worker session STARTS (its worktree comes in via --add-dir). One folder = one
     // sidebar group in the Claude desktop app. Must sit outside any git repo, so a command run
