@@ -1,7 +1,7 @@
 /*
  * Requeue a mention the watcher gave up on, so the next poll processes it again.
  * The give-up DM names this command; without it, recovery means hand-editing state.json.
- *   npm run retry -- C09K3J61YCD:1789368905.765999
+ *   npm run retry -- C0123456789:1700000000.000100
  */
 import { loadConfig } from "./config.js";
 import { loadState, saveState } from "./state.js";
