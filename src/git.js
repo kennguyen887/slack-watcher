@@ -49,6 +49,13 @@ export function createWorktree(repoPath, repoName, ts, worktreesDir, baseBranch)
     log(`[${repoName}] no origin/${baseBranch} — falling back to the repo's default branch origin/${base}`);
   }
   const tip = git(repoPath, "rev-parse", "--short", `origin/${base}`);
+  // A retry of a run that died mid-way (crash, reboot) lands on the same path. Clear the
+  // leftover, or `worktree add` fails on "already exists" and burns every retry attempt.
+  if (fs.existsSync(worktreePath)) {
+    log(`[${repoName}] replacing leftover worktree ${path.basename(worktreePath)}`);
+    discardWorktree(worktreePath);
+  }
+  git(repoPath, "worktree", "prune");
   git(repoPath, "worktree", "add", "--detach", worktreePath, `origin/${base}`);
   let subject = "";
   try {
