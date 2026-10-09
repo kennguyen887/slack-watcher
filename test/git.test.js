@@ -89,7 +89,7 @@ test("pruneWorktrees removes only old linked worktrees, never fresh ones or fore
   fs.utimesSync(oldWt, tenDaysAgo, tenDaysAgo);
   fs.utimesSync(foreign, tenDaysAgo, tenDaysAgo);
 
-  assert.equal(pruneWorktrees(worktreesDir, 3, 10), 1);
+  assert.equal(pruneWorktrees(worktreesDir, 3, 10, () => "OPEN"), 1);
   assert.equal(fs.existsSync(oldWt), false, "stale worktree should be pruned");
   assert.equal(fs.existsSync(freshWt), true, "fresh worktree must survive");
   assert.equal(fs.existsSync(foreign), true, "non-worktree dirs must never be touched");
@@ -115,11 +115,28 @@ test("pruneWorktrees caps kept worktrees at the newest N even when none are stal
     return worktreePath;
   });
 
-  assert.equal(pruneWorktrees(worktreesDir, 30, 2), 1);
+  assert.equal(pruneWorktrees(worktreesDir, 30, 2, () => "OPEN"), 1);
   assert.equal(fs.existsSync(wts[0]), false, "the oldest is over the cap and must go");
   assert.equal(fs.existsSync(wts[1]), true, "the newest N must survive the cap");
   assert.equal(fs.existsSync(wts[2]), true, "the newest N must survive the cap");
   assert.doesNotMatch(g(work, "worktree", "list"), /auto-repo-1-0/);
+});
+
+// A finished PR leaves nothing to resume, so its checkout must not sit on disk until the age/cap
+// rules catch up — but a PR still open, or one GitHub cannot report on, keeps its worktree.
+test("pruneWorktrees removes a worktree as soon as its PR is merged or closed", () => {
+  const base = "rc";
+  const { root, work } = makeRemoteAndClone(base);
+  const worktreesDir = path.join(root, "worktrees");
+  fs.writeFileSync(path.join(work, "app.txt"), "v1");
+  g(work, "add", "."); g(work, "commit", "-m", "c1"); g(work, "push", "-u", "origin", base);
+
+  const states = { "pr1": "MERGED", "pr2": "CLOSED", "pr3": "OPEN", "pr4": null };
+  const wts = Object.keys(states).map((suffix) => createWorktree(work, "repo", `1.0-${suffix}`, worktreesDir, base).worktreePath);
+  const prState = (wt) => states[wt.match(/pr\d+$/)[0]];
+
+  assert.equal(pruneWorktrees(worktreesDir, 30, 10, prState), 2);
+  assert.deepEqual(wts.map((wt) => fs.existsSync(wt)), [false, false, true, true]);
 });
 
 // ensureRepo clones a repo the team just created, so a review/fix request for it stops failing

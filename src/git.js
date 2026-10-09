@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { log } from "./log.js";
 import { listRepos } from "./repos.js";
+import { worktreePrState } from "./github.js";
 
 export function git(repoPath, ...args) {
   try {
@@ -172,6 +173,10 @@ export function removeWorktree(repoPath, worktreePath) {
   }
 }
 
+function prDoneReason(state) {
+  return state === "MERGED" || state === "CLOSED" ? `PR ${state.toLowerCase()}` : null;
+}
+
 /** Remove a linked worktree through its main repo so git's own bookkeeping stays consistent. */
 function discardWorktree(worktreePath) {
   try {
@@ -184,8 +189,9 @@ function discardWorktree(worktreePath) {
 }
 
 /**
- * Reap kept worktrees: everything past the newest `maxKept`, plus anything older than
- * maxAgeDays. The count cap is what actually bounds disk — age alone does not, because
+ * Reap kept worktrees: everything past the newest `maxKept`, anything older than maxAgeDays,
+ * and any whose PR is merged or closed — nothing is left to resume once the PR is done, so
+ * there is no reason to hold its checkout (and node_modules) until the age/cap rules catch up. The count cap is what actually bounds disk — age alone does not, because
  * retention scales with review volume (a busy day is ~10 checkouts, and one that installed
  * node_modules is GBs), so a few days of reviews fills the disk well inside the age window.
  * Age = last write, so a worktree the user is still working in keeps renewing itself.
@@ -193,7 +199,7 @@ function discardWorktree(worktreePath) {
  * anything else found under worktreesDir is left alone.
  * @returns {number} how many were removed
  */
-export function pruneWorktrees(worktreesDir, maxAgeDays, maxKept) {
+export function pruneWorktrees(worktreesDir, maxAgeDays, maxKept, prState = worktreePrState) {
   if (!fs.existsSync(worktreesDir)) return 0;
   const cutoff = Date.now() - maxAgeDays * 86_400_000;
 
@@ -214,7 +220,7 @@ export function pruneWorktrees(worktreesDir, maxAgeDays, maxKept) {
 
   let pruned = 0;
   for (const [i, wt] of worktrees.entries()) {
-    const reason = i >= maxKept ? `beyond the newest ${maxKept}` : wt.mtimeMs <= cutoff ? `>${maxAgeDays}d old` : null;
+    const reason = i >= maxKept ? `beyond the newest ${maxKept}` : wt.mtimeMs <= cutoff ? `>${maxAgeDays}d old` : prDoneReason(prState(wt.path));
     if (!reason) continue;
     discardWorktree(wt.path);
     pruned += 1;

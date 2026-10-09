@@ -89,8 +89,8 @@ export function loadConfig() {
     // setup is serialized regardless; this caps the concurrent claude review workers.
     reviewConcurrency: intOption(env.REVIEW_CONCURRENCY, 3, { min: 1, max: 6 }),
     // Finished workers leave their worktree behind so the session can be resumed;
-    // pruneWorktrees reaps them on startup once older than this OR once a newer review
-    // pushes them past the cap. The cap is the one that bounds disk — retention by age
+    // pruneWorktrees reaps them on startup once their PR is merged/closed, once older than this,
+    // OR once a newer review pushes them past the cap. The cap is the one that bounds disk — retention by age
     // alone grows with review volume, which is what filled this disk once already.
     // A mention whose processing throws is retried on later polls instead of being
     // swallowed; this bounds that, so a permanently poisoned one cannot loop forever.

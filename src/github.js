@@ -1,3 +1,4 @@
+import path from "node:path";
 import { execFileSync } from "node:child_process";
 
 export const PR_URL_RE = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
@@ -45,6 +46,20 @@ export function checkoutPr(pr, cwd) {
   // The base ref itself may be absent in a worktree created from a different branch.
   execFileSync("git", ["-C", cwd, "fetch", "origin", base], { stdio: "ignore", timeout: 180_000 });
   return base;
+}
+
+/**
+ * State of the PR a kept worktree was made for ("OPEN" | "MERGED" | "CLOSED"). A review worktree
+ * is named `…-pr<N>`; a code worker's sits on the branch it opened its PR from, which plain
+ * `gh pr view` resolves. null when there is no PR or GitHub cannot be read — never a reason to delete.
+ */
+export function worktreePrState(worktreePath) {
+  const number = path.basename(worktreePath).match(/-pr(\d+)$/)?.[1];
+  try {
+    return JSON.parse(gh(["pr", "view", ...(number ? [number] : []), "--json", "state"], 15_000, worktreePath)).state;
+  } catch {
+    return null;
+  }
 }
 
 const PR_FIELDS = "state,isDraft,mergeable,mergeStateStatus,changedFiles,additions,deletions,statusCheckRollup";
