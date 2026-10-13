@@ -41,6 +41,10 @@ function intOption(raw, fallback, { min, max } = {}) {
 export function loadConfig() {
   const fileEnv = parseEnvFile(path.join(BASE_DIR, ".env"));
   const env = { ...fileEnv, ...process.env };
+  // Every `claude` child inherits process.env, so exporting the long-lived token here is the one
+  // place that reaches the classifier, workers and the daily report alike. Without it the CLI
+  // falls back to the Keychain OAuth login, whose refresh can fail unattended and kill every worker.
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) process.env.CLAUDE_CODE_OAUTH_TOKEN = env.CLAUDE_CODE_OAUTH_TOKEN;
 
   const config = {
     slackToken: env.SLACK_USER_TOKEN || "",
