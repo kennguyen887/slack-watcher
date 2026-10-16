@@ -14,7 +14,7 @@ import { log, stamp } from "./log.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function findNewMentions(matches, state, selfId) {
+export function findNewMentions(matches, state, selfId, nowSec = Date.now() / 1000) {
   // search.messages renders mentions as <@ID> or <@ID|Display Name> — accept both.
   const mentionsMe = (m) => new RegExp(`<@${selfId}[|>]`).test(m.text ?? "");
   // PR-link messages trigger without a mention, but only the pr_review/ignore kinds downstream.
@@ -24,6 +24,8 @@ export function findNewMentions(matches, state, selfId) {
     .filter((m) => mentionsMe(m) || hasPrLink(m))
     // lastTs is only a search window; a mention owed a retry is re-admitted below it.
     .filter((m) => Number.parseFloat(m.ts) > state.lastTs || state.pending[mentionKey(m)])
+    // A parked PR review waits out its cooldown instead of failing again on every poll.
+    .filter((m) => !(state.pending[mentionKey(m)]?.retryAfter > nowSec))
     .filter((m) => !state.processed.includes(mentionKey(m)))
     .sort((a, b) => Number.parseFloat(a.ts) - Number.parseFloat(b.ts));
 }
@@ -34,6 +36,32 @@ export function findNewMentions(matches, state, selfId) {
 // request as if it had been reviewed. Everything else — cancelled, cancelled_by_user,
 // no_pr_url, unverified, reviewed — is a real outcome and must NOT come back.
 const RETRYABLE_STATUSES = new Set(["worktree_failed"]);
+
+// After MENTION_MAX_ATTEMPTS fast retries, a PR review request still inside the lookback window
+// is parked and retried on this cadence instead of dropped: a spend limit or an expired login
+// outlasts five 3-minute polls (2026-10-15: two review requests were dropped that way).
+const PARKED_RETRY_SECONDS = 3600;
+
+/**
+ * What happens to a mention after its `attempts`-th failure: retry next poll, park until
+ * `retryAfter`, or give up. Only PR review requests are parked — a code request re-run
+ * hourly for two days could open stale PRs; a review re-checks the PR as it is now.
+ */
+export function nextRetry(mention, attempts, config, nowSec = Date.now() / 1000) {
+  if (attempts < config.mentionMaxAttempts) return { giveUp: false, retryAfter: null };
+  const insideWindow = Number.parseFloat(mention.ts) >= nowSec - config.mentionLookbackHours * 3600;
+  if (insideWindow && PR_URL_RE.test(mention.text ?? "")) {
+    return { giveUp: false, retryAfter: nowSec + PARKED_RETRY_SECONDS };
+  }
+  return { giveUp: true, retryAfter: null };
+}
+
+/** Parked retries the scan can no longer see (older than the window) — they would sit in state forever. */
+export function expiredParkedKeys(state, oldestTs) {
+  return Object.entries(state.pending)
+    .filter(([, entry]) => entry.retryAfter && Number.parseFloat(entry.ts) < oldestTs)
+    .map(([key]) => key);
+}
 
 /** Retire a mention: dedupe it forever, drop its retry entry, and move the search window. */
 function consume(state, key, mention) {
@@ -109,13 +137,33 @@ async function processMention(mention, repos, config, slack, selfId) {
   return { classification, result };
 }
 
+async function giveUpExpiredRetries(config, slack, selfId, state, oldestTs) {
+  const expired = expiredParkedKeys(state, oldestTs);
+  if (!expired.length) return;
+  for (const key of expired) {
+    const { attempts, lastError } = state.pending[key];
+    log(`giving up on ${key}: still failing after ${config.mentionLookbackHours}h (${lastError})`);
+    appendHistory(config.historyFile, { key, error: lastError, attempts, gaveUp: true });
+    state.processed.push(key);
+    delete state.pending[key];
+  }
+  saveState(config.stateFile, state);
+  await slack
+    .postToSelf(selfId, `:x: Watcher gave up on ${expired.length} PR review request(s) still failing after ${config.mentionLookbackHours}h: ${expired.join(", ")} (\`npm run retry -- <key>\` to requeue)`)
+    .catch((dmErr) => log(`ERROR posting failure DM: ${dmErr.message}`));
+}
+
 async function pollOnce(config, slack, selfId, query, state) {
   // Re-scan every poll so newly cloned repos are picked up without a restart.
   const repos = listRepos(config.reposRoot);
+  // Scan the whole lookback window, not just the newest page: retry entries and requests that
+  // arrived while the watcher was down only come back if the search still returns them.
+  const oldestTs = Date.now() / 1000 - config.mentionLookbackHours * 3600;
   const [mentionMatches, prMatches] = await Promise.all([
-    slack.searchMentions(query),
-    config.prSearchQuery ? slack.searchMentions(`"${config.prSearchQuery}"`) : [],
+    slack.searchSince(query, oldestTs),
+    config.prSearchQuery ? slack.searchSince(`"${config.prSearchQuery}"`, oldestTs) : [],
   ]);
+  if (!config.dryRun) await giveUpExpiredRetries(config, slack, selfId, state, oldestTs);
   const fresh = findNewMentions(mergeMatches(mentionMatches, prMatches), state, selfId);
   if (fresh.length) log(`${fresh.length} new mention(s)`);
 
@@ -146,18 +194,21 @@ async function pollOnce(config, slack, selfId, query, state) {
       // on a review that was never coming. Leave it queued and retry on later polls instead;
       // the review worker's own never-double-review pre-check makes a retry safe.
       const attempts = (state.pending[key]?.attempts ?? 0) + 1;
-      const exhausted = attempts >= config.mentionMaxAttempts;
-      log(`ERROR processing ${key}: ${err.message} (attempt ${attempts}/${config.mentionMaxAttempts}${exhausted ? " — giving up" : ", will retry"})`);
-      appendHistory(config.historyFile, { key, error: err.message, attempts, gaveUp: exhausted });
+      const { giveUp, retryAfter } = nextRetry(mention, attempts, config);
+      const outcome = giveUp ? " — giving up" : retryAfter ? " — parked, retrying hourly" : ", will retry";
+      log(`ERROR processing ${key}: ${err.message} (attempt ${attempts}/${config.mentionMaxAttempts}${outcome})`);
+      appendHistory(config.historyFile, { key, error: err.message, attempts, gaveUp: giveUp });
       if (!config.dryRun) {
-        if (exhausted) consume(state, key, mention);
-        else state.pending[key] = { ts: mention.ts, attempts, lastError: err.message };
+        if (giveUp) consume(state, key, mention);
+        else state.pending[key] = { ts: mention.ts, attempts, lastError: err.message, ...(retryAfter && { retryAfter }) };
         saveState(config.stateFile, state);
-        // One DM when it first breaks and one when it is abandoned — not once per attempt.
-        if (attempts === 1 || exhausted) {
-          const what = exhausted
+        // One DM when it first breaks, one when it is parked, one when it is abandoned.
+        if (attempts === 1 || attempts === config.mentionMaxAttempts || giveUp) {
+          const what = giveUp
             ? `gave up after ${attempts} attempts (\`npm run retry -- ${key}\` to requeue)`
-            : `failed, retrying (attempt ${attempts}/${config.mentionMaxAttempts})`;
+            : retryAfter
+              ? `failed ${attempts} times, retrying hourly for up to ${config.mentionLookbackHours}h after the request`
+              : `failed, retrying (attempt ${attempts}/${config.mentionMaxAttempts})`;
           await slack
             .postToSelf(selfId, `:x: Watcher ${what} on a mention (${mention.permalink ?? key}): ${err.message}`)
             .catch((dmErr) => log(`ERROR posting failure DM: ${dmErr.message}`));

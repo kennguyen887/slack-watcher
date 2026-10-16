@@ -99,6 +99,9 @@ export function loadConfig() {
     // A mention whose processing throws is retried on later polls instead of being
     // swallowed; this bounds that, so a permanently poisoned one cannot loop forever.
     mentionMaxAttempts: intOption(env.MENTION_MAX_ATTEMPTS, 5, { min: 1 }),
+    // How far back each poll scans Slack. A PR review request that is still failing after
+    // MENTION_MAX_ATTEMPTS keeps being retried hourly until it is this old.
+    mentionLookbackHours: intOption(env.MENTION_LOOKBACK_HOURS, 48, { min: 1 }),
     worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 1, { min: 1 }),
     worktreeKeepMax: intOption(env.WORKTREE_KEEP_MAX, 6, { min: 1 }),
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",

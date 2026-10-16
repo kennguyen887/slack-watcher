@@ -165,6 +165,28 @@ export function createSlackClient(token, webhooks = {}) {
     },
 
     /**
+     * Every match newer than oldestTs, newest first. One page of 50 used to be the whole scan,
+     * so on a busy day an older request fell off page 1 and a retry entry for it never came
+     * back. Pages are bounded so a huge result set cannot turn one poll into dozens of calls.
+     */
+    async searchSince(query, oldestTs, maxPages = 5) {
+      const matches = [];
+      for (let page = 1; page <= maxPages; page++) {
+        const body = await call(
+          token,
+          "search.messages",
+          { query, sort: "timestamp", sort_dir: "desc", count: "100", page: String(page) },
+          { httpMethod: "GET" },
+        );
+        const pageMatches = body.messages?.matches ?? [];
+        matches.push(...pageMatches.filter((m) => Number.parseFloat(m.ts) >= oldestTs));
+        const reachedWindowEnd = pageMatches.some((m) => Number.parseFloat(m.ts) < oldestTs);
+        if (reachedWindowEnd || page >= (body.messages?.paging?.pages ?? 1)) break;
+      }
+      return matches;
+    },
+
+    /**
      * Pull conversation context around a mention: the full thread if the mention
      * is a thread reply, otherwise nearby channel messages (±windowSeconds).
      * Requires history scopes (channels/groups/im/mpim:history); degrades to

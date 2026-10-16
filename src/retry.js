@@ -25,4 +25,7 @@ state.processed = state.processed.filter((k) => k !== key);
 // pending re-admits the mention whatever lastTs says, so the window needs no surgery.
 state.pending[key] = { ts, attempts: 0, requeuedAt: new Date().toISOString() };
 saveState(config.stateFile, state);
+if (Number.parseFloat(ts) < Date.now() / 1000 - config.mentionLookbackHours * 3600) {
+  console.warn(`warning: ${key} is older than MENTION_LOOKBACK_HOURS=${config.mentionLookbackHours}, so the scan will not find it — raise it for one poll`);
+}
 console.log(`requeued ${key}${wasProcessed ? " (cleared its dedupe entry)" : ""} — the next poll picks it up`);
