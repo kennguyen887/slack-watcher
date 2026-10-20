@@ -166,6 +166,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.workerModel,
+      effort: config.workerEffort,
       label: `cwalert:${repo}`,
       signal: controller.signal,
       sessionId,

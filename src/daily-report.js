@@ -120,6 +120,7 @@ async function buildReport(config, today) {
       cwd: BASE_DIR,
       timeoutMs: 5 * 60_000,
       model: config.workerModel,
+      effort: config.workerEffort,
       extraArgs: config.workerClaudeArgs,
       label: "daily-report",
     })

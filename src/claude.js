@@ -31,9 +31,10 @@ export const workdirInstruction = (workdir) =>
   `Your FIRST tool call must be the Bash command: cd ${workdir} — every file path, search, git, gh and test command ` +
   `for this task runs there, never in the directory this session started in.`;
 
-export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal, sessionId, resumeSessionId, name, workdir }) {
+export function runClaude({ bin, prompt, cwd, timeoutMs, model, effort, extraArgs = [], label, signal, sessionId, resumeSessionId, name, workdir }) {
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", ...extraArgs];
   if (model) args.push("--model", model);
+  if (effort) args.push("--effort", effort);
   let env = process.env;
   if (workdir) {
     // --add-dir is variadic: it must be followed by another flag, never by a positional value.

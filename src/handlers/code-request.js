@@ -121,6 +121,7 @@ export async function handleCodeRequest(ctx) {
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.workerModel,
+      effort: config.workerEffort,
       label: classification.repo,
       signal: controller.signal,
       sessionId,

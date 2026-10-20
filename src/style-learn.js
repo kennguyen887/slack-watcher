@@ -156,6 +156,7 @@ async function main() {
     cwd: config.reposRoot,
     timeoutMs: 10 * 60_000,
     model: config.reviewModel,
+    effort: config.reviewEffort,
     label: "style",
   });
 

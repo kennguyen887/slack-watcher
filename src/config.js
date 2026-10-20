@@ -5,6 +5,8 @@ import { WEBHOOK_URL_RE } from "./slack.js";
 
 export const BASE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+const EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
 function parseEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
   return fs
@@ -66,6 +68,12 @@ export function loadConfig() {
     classifierModel: env.CLASSIFIER_MODEL || "haiku",
     workerModel: env.WORKER_MODEL || "sonnet",
     reviewModel: env.REVIEW_MODEL || "opus",
+    // `claude --effort` per role: thinking depth is most of a run's output tokens, so each role
+    // gets only what its job needs. Classification is a lookup; reviews and answers go public.
+    classifierEffort: env.CLASSIFIER_EFFORT || "low",
+    workerEffort: env.WORKER_EFFORT || "medium",
+    reviewEffort: env.REVIEW_EFFORT || "medium",
+    answerEffort: env.ANSWER_EFFORT || "medium",
     workerClaudeArgs: (env.WORKER_CLAUDE_ARGS ?? "--dangerously-skip-permissions")
       .split(" ")
       .filter(Boolean),
@@ -166,6 +174,11 @@ export function loadConfig() {
     // silently divert that DM into the webhook's channel — a wrong-channel send, in public.
     if (/^[@UD]/.test(channel)) {
       errors.push(`SLACK_WEBHOOKS["${channel}"] looks like a DM target — webhooks post to a channel only`);
+    }
+  }
+  for (const key of ["CLASSIFIER_EFFORT", "WORKER_EFFORT", "REVIEW_EFFORT", "ANSWER_EFFORT"]) {
+    if (env[key] && !EFFORT_LEVELS.has(env[key])) {
+      errors.push(`${key} must be one of ${[...EFFORT_LEVELS].join(", ")}`);
     }
   }
   if (!fs.existsSync(config.reposRoot)) {

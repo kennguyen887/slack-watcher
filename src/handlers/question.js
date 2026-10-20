@@ -190,6 +190,7 @@ export async function handleQuestion(ctx) {
       cwd: config.reposRoot,
       timeoutMs: config.answerTimeoutMs,
       model: config.answerModel,
+      effort: config.answerEffort,
       // NOT config.workerClaudeArgs: that carries --dangerously-skip-permissions, which is
       // exactly what ANSWER_TOOLS exists to avoid here.
       extraArgs: ANSWER_TOOLS,
