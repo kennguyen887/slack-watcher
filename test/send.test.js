@@ -192,3 +192,41 @@ test("sendSlackMessage leaves DM resolution alone — a webhook cannot reach a D
   await sendSlackMessage(createSlackClient("xoxp-test", webhooks), "@ken", "hello");
   assert.deepEqual(urls, ["https://slack.com/api/users.list", "https://slack.com/api/chat.postMessage"]);
 });
+
+// ── edit_slack.js ────────────────────────────────────────────────────────────
+
+test("parsePermalink turns a message link into channel + ts, and rejects anything else", async () => {
+  const { parsePermalink } = await import("../src/edit_slack.js");
+  assert.deepEqual(
+    parsePermalink("https://fn.slack.com/archives/C0123ABC/p1789368905765999?thread_ts=1"),
+    { channel: "C0123ABC", ts: "1789368905.765999" },
+  );
+  assert.equal(parsePermalink("#493"), null);
+});
+
+test("--last finds your newest message in the channel and chat.update rewrites it", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const method = String(url).split("/api/")[1].split("?")[0];
+    calls.push({ method, url: String(url), body: init.body && JSON.parse(init.body) });
+    if (method === "search.messages") {
+      return jsonResponse({
+        ok: true,
+        messages: { matches: [{ channel: { id: "C9" }, ts: "17.5", text: "old", permalink: "p" }] },
+      });
+    }
+    return jsonResponse({ ok: true });
+  });
+  const { resolveTarget } = await import("../src/edit_slack.js");
+  const slack = createSlackClient("xoxp-test");
+
+  const target = await resolveTarget(slack, { last: "#commonground" });
+  await slack.update(target.channel, target.ts, "new");
+
+  assert.equal(new URL(calls[0].url).searchParams.get("query"), "from:me in:#commonground");
+  assert.deepEqual(calls[1], {
+    method: "chat.update",
+    url: "https://slack.com/api/chat.update",
+    body: { channel: "C9", ts: "17.5", text: "new" },
+  });
+});

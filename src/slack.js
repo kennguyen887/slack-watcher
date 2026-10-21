@@ -253,6 +253,19 @@ export function createSlackClient(token, webhooks = {}) {
       return body.channel;
     },
 
+    /** Edit a message the token's user posted. Webhook posts cannot be edited this way. */
+    async update(channel, ts, text) {
+      await call(token, "chat.update", { channel, ts, text });
+    },
+
+    /** The user's newest message in a channel ("#name" or ID), via search: { channel, ts, text, permalink }. */
+    async findLastOwnMessage(channel) {
+      const where = channel.startsWith("#") ? channel : `<#${channel}>`;
+      const [hit] = await this.searchMentions(`from:me in:${where}`, 1);
+      if (!hit) throw new Error(`no message of yours found in ${channel}`);
+      return { channel: hit.channel.id, ts: hit.ts, text: hit.text, permalink: hit.permalink };
+    },
+
     /** Resolve @username / display name / real name → user ID. Requires users:read scope. */
     async resolveUserId(handle) {
       const name = handle.replace(/^@/, "").toLowerCase();
