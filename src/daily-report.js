@@ -4,7 +4,7 @@
 //
 // Run every few minutes (launchd, see launchd/com.slack-watcher-daily.plist.template); each
 // run is a cheap no-op until today's random post time arrives. Per run:
-//   1. Mon–Fri only, inside DAILY_REPORT_WINDOW (local time, default 14-21).
+//   1. Mon–Fri only, inside DAILY_REPORT_WINDOW (local time, default 9-19).
 //   2. Find today's reminder thread in DAILY_REPORT_CHANNEL; stop if you already replied in it.
 //   3. First sighting of a thread fixes today's post time = thread open + random(min..max) minutes
 //      (persisted, so every run agrees on it).
@@ -121,7 +121,7 @@ async function buildReport(config, today) {
       timeoutMs: 5 * 60_000,
       model: config.workerModel,
       effort: config.workerEffort,
-      extraArgs: config.workerClaudeArgs,
+      extraArgs: [...config.workerClaudeArgs, ...config.workerLeanArgs],
       label: "daily-report",
     })
   ).trim();

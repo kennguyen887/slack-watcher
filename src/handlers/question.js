@@ -193,7 +193,7 @@ export async function handleQuestion(ctx) {
       effort: config.answerEffort,
       // NOT config.workerClaudeArgs: that carries --dangerously-skip-permissions, which is
       // exactly what ANSWER_TOOLS exists to avoid here.
-      extraArgs: ANSWER_TOOLS,
+      extraArgs: [...ANSWER_TOOLS, ...config.workerLeanArgs],
       label: "question",
       sessionId,
       signal: controller.signal,

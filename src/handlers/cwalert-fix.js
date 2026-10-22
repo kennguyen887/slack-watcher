@@ -164,7 +164,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       cwd: config.workerSessionsDir,
       workdir: worktreePath,
       timeoutMs: config.workerTimeoutMs,
-      extraArgs: config.workerClaudeArgs,
+      extraArgs: [...config.workerClaudeArgs, ...config.workerLeanArgs],
       model: config.workerModel,
       effort: config.workerEffort,
       label: `cwalert:${repo}`,

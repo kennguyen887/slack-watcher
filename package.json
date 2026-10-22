@@ -18,6 +18,7 @@
     "dry": "DRY_RUN=1 node src/index.js --once",
     "test": "node --test test/*.test.js",
     "retry": "node src/retry.js",
-    "learn-style": "node src/style-learn.js"
+    "learn-style": "node src/style-learn.js",
+    "usage": "node src/usage.js"
   }
 }

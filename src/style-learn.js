@@ -158,6 +158,7 @@ async function main() {
     model: config.reviewModel,
     effort: config.reviewEffort,
     label: "style",
+    extraArgs: config.workerLeanArgs,
   });
 
   fs.mkdirSync(STYLE_DIR, { recursive: true });

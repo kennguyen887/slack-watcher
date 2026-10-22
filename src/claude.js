@@ -1,5 +1,39 @@
 import { spawn } from "node:child_process";
-import { log } from "./log.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { log, stamp } from "./log.js";
+
+/** One line per `claude -p` run — tokens, cost and the full prompt — for `npm run usage`. */
+export const USAGE_LOG = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "logs", "usage.jsonl");
+
+/** Append a finished run's usage. Best-effort: a full disk must not fail the run it measures. */
+export function recordUsage(event, { role, model, effort, sessionId, prompt }, file = USAGE_LOG) {
+  const u = event.usage ?? {};
+  const line = {
+    ts: stamp(),
+    role,
+    model: Object.keys(event.modelUsage ?? {}).join(",") || model || null,
+    effort: effort ?? null,
+    ok: !event.is_error && event.subtype === "success",
+    sessionId: event.session_id ?? sessionId ?? null,
+    turns: event.num_turns ?? null,
+    durationMs: event.duration_ms ?? null,
+    costUsd: event.total_cost_usd ?? null,
+    inputTokens: u.input_tokens ?? 0,
+    cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
+    cacheReadTokens: u.cache_read_input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    promptChars: prompt.length,
+    prompt,
+  };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify(line)}\n`);
+  } catch (err) {
+    log(`usage log write failed: ${err.message}`);
+  }
+}
 
 function summarizeInput(input = {}) {
   const s = input.command ?? input.file_path ?? input.pattern ?? input.query ?? input.url ?? "";
@@ -31,7 +65,7 @@ export const workdirInstruction = (workdir) =>
   `Your FIRST tool call must be the Bash command: cd ${workdir} — every file path, search, git, gh and test command ` +
   `for this task runs there, never in the directory this session started in.`;
 
-export function runClaude({ bin, prompt, cwd, timeoutMs, model, effort, extraArgs = [], label, signal, sessionId, resumeSessionId, name, workdir }) {
+export function runClaude({ bin, prompt, cwd, timeoutMs, model, effort, extraArgs = [], label, role = label, signal, sessionId, resumeSessionId, name, workdir }) {
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", ...extraArgs];
   if (model) args.push("--model", model);
   if (effort) args.push("--effort", effort);
@@ -84,6 +118,7 @@ export function runClaude({ bin, prompt, cwd, timeoutMs, model, effort, extraArg
         // close, which can lag minutes if the worker left children holding the pipe.
         clearTimeout(timer);
         child.kill();
+        recordUsage(event, { role, model, effort, sessionId: resumeSessionId ?? sessionId, prompt });
         if (event.is_error || event.subtype !== "success") {
           // e.g. inaccessible model, auth failure — surface as a real error, not a parseable result.
           const reason = event.subtype && event.subtype !== "success" ? event.subtype : "error";

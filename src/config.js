@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WEBHOOK_URL_RE } from "./slack.js";
@@ -32,6 +33,43 @@ function parseJsonEnv(raw) {
     return {};
   }
 }
+
+/**
+ * CLI args that strip a worker down to what workers actually use. Measured over 96 worker
+ * sessions: 1,264 Bash calls, a handful of Read/Edit/Write, 17 Linear MCP calls (via ToolSearch),
+ * one skill load — yet every turn re-sent the definitions of every built-in tool, every user MCP
+ * server and the skill catalogue: ~44k tokens of context per turn, ~14k with this (2026-10-22,
+ * `claude -p` probe). Unset/"*" for either list keeps the CLI default for that part.
+ * `--mcp-config` and `--tools` are variadic, so neither is the last flag here.
+ */
+export function leanWorkerArgs(
+  { tools, mcpServers },
+  claudeJsonPath = path.join(os.homedir(), ".claude.json"),
+  mcpFile = path.join(os.tmpdir(), `slack-watcher-mcp-${process.getuid?.() ?? "u"}.json`),
+) {
+  const args = [];
+  if (tools) args.push("--tools", tools.join(","));
+  if (mcpServers) {
+    let all = {};
+    try {
+      all = JSON.parse(fs.readFileSync(claudeJsonPath, "utf8")).mcpServers ?? {};
+    } catch {
+      // no user config — the worker simply runs with no MCP servers
+    }
+    const kept = Object.fromEntries(mcpServers.filter((n) => all[n]).map((n) => [n, all[n]]));
+    // A file, not an inline JSON arg: server entries carry API keys, and argv is world-readable in `ps`.
+    fs.writeFileSync(mcpFile, JSON.stringify({ mcpServers: kept }), { mode: 0o600 });
+    fs.chmodSync(mcpFile, 0o600);
+    args.push("--strict-mcp-config", "--mcp-config", mcpFile);
+  }
+  return [...args, "--disable-slash-commands"];
+}
+
+/** Comma list from env; "*" means "no restriction" (null). */
+const listOption = (raw, fallback) => {
+  const value = raw ?? fallback;
+  return value === "*" ? null : value.split(",").map((s) => s.trim()).filter(Boolean);
+};
 
 function intOption(raw, fallback, { min, max } = {}) {
   const value = raw === undefined || raw === "" ? fallback : Number.parseInt(raw, 10);
@@ -77,6 +115,12 @@ export function loadConfig() {
     workerClaudeArgs: (env.WORKER_CLAUDE_ARGS ?? "--dangerously-skip-permissions")
       .split(" ")
       .filter(Boolean),
+    // Appended to every worker run (code, review, answer, cwalert, daily report, style).
+    // ToolSearch stays in: it is how a worker loads the (deferred) Linear MCP tools.
+    workerLeanArgs: leanWorkerArgs({
+      tools: listOption(env.WORKER_TOOLS, "Bash,Read,Grep,Glob,Edit,Write,ToolSearch"),
+      mcpServers: listOption(env.WORKER_MCP_SERVERS, "linear-api"),
+    }),
     // ── Open Code Review (github.com/alibaba/open-code-review) ──
     // `ocr delegate` picks the PR's reviewable files and resolves a checklist per file; the
     // review itself still runs on REVIEW_MODEL. Off switch only — a missing `ocr` already
@@ -108,8 +152,10 @@ export function loadConfig() {
     // swallowed; this bounds that, so a permanently poisoned one cannot loop forever.
     mentionMaxAttempts: intOption(env.MENTION_MAX_ATTEMPTS, 5, { min: 1 }),
     // How far back each poll scans Slack. A PR review request that is still failing after
-    // MENTION_MAX_ATTEMPTS keeps being retried hourly until it is this old.
-    mentionLookbackHours: intOption(env.MENTION_LOOKBACK_HOURS, 48, { min: 1 }),
+    // MENTION_MAX_ATTEMPTS keeps being retried hourly until it is this old. 72h, not less:
+    // cron-run.sh sleeps Fri 19:00 → Mon 09:00 (62h), and Monday's first poll must still
+    // see a mention from Friday evening.
+    mentionLookbackHours: intOption(env.MENTION_LOOKBACK_HOURS, 72, { min: 1 }),
     worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 1, { min: 1 }),
     worktreeKeepMax: intOption(env.WORKTREE_KEEP_MAX, 6, { min: 1 }),
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
@@ -141,8 +187,9 @@ export function loadConfig() {
       // Post time = thread open + uniform(min..max) minutes: never a fixed minute.
       minMinutes: intOption(env.DAILY_REPORT_MIN_MINUTES, 10, { min: 0 }),
       maxMinutes: intOption(env.DAILY_REPORT_MAX_MINUTES, 120, { min: 1 }),
-      // Local-time hours [from, to) in which the job may act (Mon–Fri only).
-      window: (env.DAILY_REPORT_WINDOW || "14-21").split("-").map((n) => Number.parseInt(n, 10)),
+      // Local-time hours [from, to) in which the job may act (Mon–Fri only) — office hours, like
+      // the watcher. The team thread opens ~15:20 local, so even a +120 min post lands inside.
+      window: (env.DAILY_REPORT_WINDOW || "9-19").split("-").map((n) => Number.parseInt(n, 10)),
     },
     worktreesDir: path.join(BASE_DIR, "worktrees"),
     // Where every worker session STARTS (its worktree comes in via --add-dir). One folder = one

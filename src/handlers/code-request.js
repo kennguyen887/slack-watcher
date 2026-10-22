@@ -119,7 +119,7 @@ export async function handleCodeRequest(ctx) {
       cwd: config.workerSessionsDir,
       workdir: worktreePath,
       timeoutMs: config.workerTimeoutMs,
-      extraArgs: config.workerClaudeArgs,
+      extraArgs: [...config.workerClaudeArgs, ...config.workerLeanArgs],
       model: config.workerModel,
       effort: config.workerEffort,
       label: classification.repo,

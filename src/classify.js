@@ -48,6 +48,7 @@ export async function classifyMention(mention, repos, config, contextBlock = "")
     timeoutMs: 120_000,
     model: config.classifierModel,
     effort: config.classifierEffort,
+    role: "classify",
     // Classification only reads the prompt: skip CLAUDE.md, settings hooks, MCP servers, tools and
     // skills, which cost ~55k input tokens per run against ~3.6k without them.
     extraArgs: ["--strict-mcp-config", "--tools", "", "--disable-slash-commands", "--setting-sources", ""],

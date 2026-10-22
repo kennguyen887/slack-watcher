@@ -97,12 +97,12 @@ Built-in guardrails and quality-of-life:
    ```
    Uninstall: `./uninstall.sh`.
 
-   > **macOS: use the LaunchAgent, not `crontab`.** The worker's `claude` CLI reads its OAuth token from the login Keychain, which only your GUI login session can unlock. A crontab entry runs outside that session, so every worker fails with `Failed to authenticate: OAuth session expired` even though `claude` works fine in your terminal. `install.sh` installs a `gui/<uid>` LaunchAgent that runs `cron-run.sh` every 180s — same one-shot model, but with Keychain access.
+   > **macOS: use the LaunchAgent, not `crontab`.** The worker's `claude` CLI reads its OAuth token from the login Keychain, which only your GUI login session can unlock. A crontab entry runs outside that session, so every worker fails with `Failed to authenticate: OAuth session expired` even though `claude` works fine in your terminal. `install.sh` installs a `gui/<uid>` LaunchAgent that runs `cron-run.sh` every 180s — same one-shot model, but with Keychain access. `cron-run.sh` only polls Mon–Fri 09:00–19:00 (see **Schedules, models and token usage**).
 
 ## How it works
 
 ```
-poll (45s) ──► search.messages: mentions of you  ──┐
+poll (180s, Mon–Fri 09–19) ──► search.messages: mentions of you  ──┐
           ──► search.messages: PR links (your org) ─┤─► dedupe (state.json)
                                                     ▼
                               fetch thread / nearby messages as context
@@ -127,10 +127,67 @@ Safety properties:
 - **Your working copy is never touched** — workers run in isolated `git worktree`s under `worktrees/`, kept for `WORKTREE_KEEP_DAYS` days and capped at the newest `WORKTREE_KEEP_MAX` (so recent sessions stay resumable without the folder growing unbounded), then pruned automatically on startup.
 - **Nothing public without a gate** — PRs are drafts; every public action (review comments, the "added comments" thread reply, and an auto-answer) sits behind the grace window ("reply `stop` to cancel"). An auto-answer clears four more gates on top: Vietnamese only, a learned voice must exist, the worker must have verified the answer and judged that it needs no decision from you, and it must fit `ANSWER_MAX_CHARS` — anything else becomes a private draft. The answer worker also runs with the file-editing tools denied at the CLI, because unlike the code and review workers it reads your real working copies rather than a disposable worktree.
 - **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own or already-reviewed PRs.
-- **A bad poll never eats a request** — a mention whose processing throws (expired CLI login, spend limit, timeout) stays queued and is retried on later polls, up to `MENTION_MAX_ATTEMPTS` (default 5); a PR review request is then retried hourly until it is `MENTION_LOOKBACK_HOURS` (default 48) old, and every poll scans that whole window, so a review asked for during an outage is still picked up when it ends; retrying is safe because the review worker never re-reviews a PR it already commented on. You get a DM on the first failure and on the give-up, and `npm run retry -- <channelId>:<messageTs>` puts an abandoned one back in the queue.
+- **A bad poll never eats a request** — a mention whose processing throws (expired CLI login, spend limit, timeout) stays queued and is retried on later polls, up to `MENTION_MAX_ATTEMPTS` (default 5); a PR review request is then retried hourly until it is `MENTION_LOOKBACK_HOURS` (default 72) old, and every poll scans that whole window, so a review asked for during an outage is still picked up when it ends; retrying is safe because the review worker never re-reviews a PR it already commented on. You get a DM on the first failure and on the give-up, and `npm run retry -- <channelId>:<messageTs>` puts an abandoned one back in the queue.
 - **Audit trail** — every processed message is appended to `history.jsonl`; live worker progress streams to `logs/watcher.log`.
 
 ⚠️ **Understand the risk**: workers run `claude -p --dangerously-skip-permissions` with write access to your repos, triggered by incoming Slack messages. Anyone who can mention you can start a worker (it only ever opens draft PRs, but still). Run it only in workspaces you trust, or set `WORKER_CLAUDE_ARGS=--permission-mode acceptEdits` for a read-mostly mode that stops at push/PR steps.
+
+## Schedules, models and token usage
+
+Everything runs from two gui LaunchAgents, **Mon–Fri 09:00–19:00 local only** (`WATCH_DAYS=1-5`,
+`WATCH_HOURS=9-19`; the daily report has its own `DAILY_REPORT_WINDOW`, default `9-19`). Off-hours
+ticks exit before node even starts. Nothing is dropped while it sleeps: the first poll back scans
+the last `MENTION_LOOKBACK_HOURS` (default 72 — the Fri 19:00 → Mon 09:00 gap is 62h).
+
+```mermaid
+flowchart TD
+  subgraph LA1["launchd com.slack-watcher — every 180s"]
+    G1{"cron-run.sh<br/>Mon–Fri 09–19?<br/>previous poll done?"} -- no --> X1[exit]
+    G1 -- yes --> P["index.js --once<br/>search.messages: mentions + PR links (72h)"]
+  end
+  P --> F{"reply in a thread<br/>already reviewed?"}
+  F -- yes --> RF["Re-review: resume recorded session<br/>REVIEW_MODEL opus · medium"]
+  F -- no --> C["Classify<br/>CLASSIFIER_MODEL haiku · low<br/>no tools / MCP / CLAUDE.md"]
+  C -- code_request --> CR["Code worker → draft PR<br/>WORKER_MODEL sonnet · medium"]
+  C -- pr_review --> OCR["ocr delegate (no model)"] --> RV["Review worker → inline comments / approve<br/>REVIEW_MODEL opus · medium"]
+  C -- question --> Q["Answer worker (read-only tools)<br/>ANSWER_MODEL opus · medium"]
+  C -- needs_clarification --> CL["DM clarifying questions (no model)"]
+  C -- ignore --> I[nothing]
+  P -. CWALERT_ENABLED=1 .-> CW["cwalert source → fix PR<br/>WORKER_MODEL sonnet · medium"]
+  subgraph LA2["launchd com.slack-watcher-daily — every 300s"]
+    G2{"Mon–Fri 09–19?<br/>thread open + random delay passed?<br/>not posted yet?"} -- no --> X2[exit]
+    G2 -- yes --> DR["Daily report: gh PRs + Linear → 'Today:' reply<br/>WORKER_MODEL sonnet · medium"]
+  end
+  M["manual: npm run learn-style"] --> ST["Distill voice profile<br/>REVIEW_MODEL opus · medium"]
+  CR & RV & RF & Q & CW & DR & ST & C --> U[("logs/usage.jsonl<br/>tokens · cost · prompt")]
+```
+
+| Role | Model (env) | Effort (env) | Trigger |
+|---|---|---|---|
+| Classifier | `haiku` (`CLASSIFIER_MODEL`) | `low` (`CLASSIFIER_EFFORT`) | every new mention / PR link |
+| Code worker, cwalert fix, daily report | `sonnet` (`WORKER_MODEL`) | `medium` (`WORKER_EFFORT`) | `code_request`, CloudWatch event, weekday report thread |
+| PR review + re-review, style learning | `opus` (`REVIEW_MODEL`) | `medium` (`REVIEW_EFFORT`) | `pr_review`, reply in a reviewed thread, `npm run learn-style` |
+| Answer worker | `opus` (`ANSWER_MODEL`, falls back to `REVIEW_MODEL`) | `medium` (`ANSWER_EFFORT`) | `question` (Vietnamese only) |
+
+**Lean workers.** Every worker runs with only the tools workers actually use
+(`WORKER_TOOLS`, default `Bash,Read,Grep,Glob,Edit,Write,ToolSearch`), only the Linear MCP server
+(`WORKER_MCP_SERVERS`, default `linear-api`) and skills disabled. Across 96 recorded worker
+sessions that was everything they called, yet each turn was re-sending every built-in tool
+definition, every MCP server and the skill catalogue: ~44k context tokens per turn, ~14k now. A
+review averages ~10 turns, so that is ~300k fewer tokens per review. `*` for either variable
+restores the CLI default.
+
+**Usage log.** Every `claude -p` run appends one line to `logs/usage.jsonl`: role, model, effort,
+turns, duration, input / cache-write / cache-read / output tokens, cost (`total_cost_usd`, the
+API-equivalent price even on a subscription token), session id and the full prompt.
+
+```bash
+npm run usage                # last 7 days by day × role, plus the 5 costliest runs
+npm run usage -- --days 30
+```
+
+The session id reopens the full transcript (`claude --resume <id>` from `WORKER_SESSIONS_DIR`)
+when a run looks expensive and you want to see where the turns went.
 
 ## Manual sending (`src/send.js`)
 
@@ -151,7 +208,8 @@ One file = one concern; handlers split per mention kind, routed by a plain map.
 | `src/classify.js` | Mention classification via a cheap model |
 | `src/handlers/` | One file per kind; `shared.js` = grace window, thread-ts, trim; `index.js` = route map |
 | `src/slack.js` | Slack Web API client (search, post, context fetch, 429 retry) |
-| `src/claude.js` | `claude -p` runner with streamed progress |
+| `src/claude.js` | `claude -p` runner with streamed progress + per-run usage log |
+| `src/usage.js` | `npm run usage` — token/cost summary of `logs/usage.jsonl` |
 | `src/git.js` | git exec + disposable worktree create/remove |
 | `src/repos.js` | Repo discovery + doc-sourced repo hints |
 | `src/github.js` | PR URL parsing, PR/CI status, review reconciliation |
