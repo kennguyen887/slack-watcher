@@ -4,7 +4,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, removeWorktree } from "../git.js";
 import { prepareAttachments } from "../attachments.js";
 import { log } from "../log.js";
-import { cancelledDuringGrace, minutes, trim, watchForStop } from "./shared.js";
+import { cancelledDuringGrace, minutes, toBranchName, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -22,7 +22,7 @@ Task summary: ${classification.summary}
 
 Mandatory workflow for this repository:
 1. You are already in an ISOLATED git worktree checked out at the latest \`origin/${base}\` (detached). The user's main working copy lives elsewhere — never cd into it or touch it. All work branches from here.
-2. Create a branch named \`${branchName}\` (prefix \`fix/\` or \`feat/\` plus a short slug is also fine).
+2. Create a branch named exactly \`${branchName}\` — do not invent another name. If that branch already exists on origin, append \`-2\` (then \`-3\`, …); never force-push over someone else's branch.
 3. DUPLICATE-WORK CHECK before writing any code — a teammate (or the user) may already be on it:
    - Run \`gh pr list --state all --limit 20\` and \`git log origin/${base} --oneline -20\`; search both for the ticket ID (e.g. PROJ-123), keywords from the request, and the files you expect to touch.
    - Re-read the conversation context above for replies saying it's already done or claimed.
@@ -50,7 +50,10 @@ export async function handleCodeRequest(ctx) {
     return { status: "needs_repo" };
   }
 
-  const branchName = `auto/slack-${mention.ts.replace(".", "-")}`;
+  // Named after the request, not the Slack timestamp — the PR list has to stay readable.
+  const branchName = toBranchName(classification.branch || classification.summary, {
+    fallback: `slack-${mention.ts}`,
+  });
   const graceNote =
     config.workerGraceMs > 0
       ? `• *Starting in ${minutes(config.workerGraceMs)} min* — reply \`stop\` here to cancel, before OR while it runs (e.g. if you're already on it)\n`
@@ -116,6 +119,7 @@ export async function handleCodeRequest(ctx) {
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.workerModel,
+      fallbackModel: config.workerFallbackModel,
       label: classification.repo,
       signal: controller.signal,
     });

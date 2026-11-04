@@ -15,6 +15,38 @@ export const minutes = (ms) => Math.round(ms / 60_000);
 export const trim = (text) =>
   text.length > SLACK_TEXT_LIMIT ? `${text.slice(0, SLACK_TEXT_LIMIT)}\n… (truncated)` : text;
 
+const BRANCH_TYPES = new Set(["fix", "feat", "chore", "refactor", "docs"]);
+
+/** Title → git-safe kebab slug: strips accents (Vietnamese titles included) and keeps it short. */
+function slugify(text, { maxWords = 8, maxLen = 48 } = {}) {
+  const slug = String(text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, maxWords)
+    .join("-");
+  // Trim to length on a word boundary — "…-undefined-re" reads like a typo.
+  return slug.length <= maxLen ? slug : slug.slice(0, maxLen).replace(/-[^-]*$/, "");
+}
+
+/**
+ * A branch name a human can read in the PR list — `fix/price-filter-on-listing-page`,
+ * never `auto/slack-1785862152-195269`. Accepts a plain title (an error line, a request
+ * summary) or an already-typed suggestion (`feat/dark-mode`) from the classifier.
+ * The fallback only kicks in when the title slugs to nothing (e.g. CJK-only text).
+ */
+export function toBranchName(title, { type = "fix", fallback = "" } = {}) {
+  const [head, ...rest] = String(title ?? "").trim().split("/");
+  const suggested = rest.length > 0 && BRANCH_TYPES.has(head.toLowerCase()) ? head.toLowerCase() : null;
+  const slug = slugify(suggested ? rest.join("/") : title);
+  return `${suggested ?? type}/${slug || slugify(fallback) || "slack-request"}`;
+}
+
 /** Thread timestamp for replying to a mention: its own thread if it is a reply, else the message itself. */
 export function threadTsOf(mention) {
   return mention.permalink?.match(/thread_ts=(\d+\.\d+)/)?.[1] ?? mention.ts;

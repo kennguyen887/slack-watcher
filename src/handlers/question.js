@@ -38,6 +38,7 @@ export async function handleQuestion(ctx) {
       cwd: config.reposRoot,
       timeoutMs: config.answerTimeoutMs,
       model: config.workerModel,
+      fallbackModel: config.workerFallbackModel,
       label: "question",
     });
   } finally {

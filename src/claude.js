@@ -19,7 +19,26 @@ export class CancelledError extends Error {
   }
 }
 
-export function runClaude({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal }) {
+/**
+ * Run `claude -p` with the preferred `model`, falling back to `fallbackModel`
+ * if the first attempt fails for any reason other than user cancellation.
+ * This lets the daemon prefer Fable and drop to Opus when Fable is restricted
+ * on the account. Cancellation is never retried — a user stop must stay stopped.
+ */
+export async function runClaude({ bin, prompt, cwd, timeoutMs, model, fallbackModel, ...rest }) {
+  try {
+    return await runClaudeOnce({ bin, prompt, cwd, timeoutMs, model, ...rest });
+  } catch (err) {
+    const canRetry =
+      fallbackModel && fallbackModel !== model && !(err instanceof CancelledError) && !rest.signal?.aborted;
+    if (!canRetry) throw err;
+    const label = rest.label ? `[${rest.label}] ` : "";
+    log(`${label}model "${model}" failed (${err.message.slice(0, 120)}); retrying with "${fallbackModel}"`);
+    return await runClaudeOnce({ bin, prompt, cwd, timeoutMs, model: fallbackModel, ...rest });
+  }
+}
+
+function runClaudeOnce({ bin, prompt, cwd, timeoutMs, model, extraArgs = [], label, signal }) {
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose", ...extraArgs];
   if (model) args.push("--model", model);
 

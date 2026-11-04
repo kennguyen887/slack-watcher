@@ -7,7 +7,7 @@ A personal Slack → Claude Code automation daemon. It watches Slack for message
 | Incoming message | What the watcher does |
 |---|---|
 | "@you fix the price filter on the listing page" | Spawns a headless [Claude Code](https://claude.com/claude-code) worker in a **disposable git worktree** → implements the fix → runs tests/lint → opens a **draft PR** targeting your integration branch |
-| "Please review this PR: github.com/…/pull/123" (mention optional) | Reviews the PR → posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs only, minor nits skipped, plain English) → replies in the Slack thread (or just **"LGTM!"** when the PR is clean) |
+| "Please review this PR: github.com/…/pull/123" (mention optional) | Reads **every changed file** (fanning out to parallel subagents on a big PR), hunts the classes in [`docs/review-checklist.md`](docs/review-checklist.md), verifies each candidate against the real code, then posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs plus junk test files the PR adds, minor nits skipped, plain English) → replies in the Slack thread (or just **"LGTM!"** when the PR is clean) |
 | "@you when do we deploy?" | Drafts an answer using your repos/docs as context → DMs it to you privately — you review and paste |
 | "@you fix the bug" (too vague) | DMs you 1-3 ready-to-send clarifying questions instead of guessing |
 | "thanks @you!" / FYI / status update | Ignored — nothing happens |
@@ -18,7 +18,8 @@ Built-in guardrails and quality-of-life:
 - **Reads the whole conversation** — pulls the thread or nearby messages, so requests split across several short messages are understood as one.
 - **Sees attachments** — downloads screenshots and small log/text files from the message (where bug reports usually live) and feeds them to the worker; the classifier only sees a cheap text marker, so vision cost is paid once, by the worker, only when files exist.
 - **Grace window + kill switch** — DMs you "starting in N min, reply `stop` to cancel" before doing anything; replying `stop` also works **while the worker runs** (checked every 20 s) and kills the Claude session immediately, discarding the worktree.
-- **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own or already-reviewed PRs.
+- **Duplicate-work check** — scans open PRs, recent commits, and thread replies before writing code; never reviews its own PR, and never re-reviews code it already commented on (it does pick up commits pushed after its last review).
+- **Tunable review depth** — what the reviewer hunts for lives in [`docs/review-checklist.md`](docs/review-checklist.md), injected into every review prompt. Edit that file (or point `REVIEW_CHECKLIST_FILE` at a shared docs repo) to change review behaviour without touching code.
 - **Your working copy is sacred** — workers only ever touch throwaway worktrees; drafts only; nothing public without the grace gate.
 - **Full visibility** — stage-by-stage DMs, streamed worker progress in the console log, and a `history.jsonl` audit trail.
 - **Manual send CLI** — fire off the drafted replies (or anything) to a channel or DM in one command.
@@ -73,7 +74,7 @@ Safety properties:
 
 - **Your working copy is never touched** — workers run in throwaway `git worktree`s under `worktrees/`, removed in the background afterwards.
 - **Nothing public without a gate** — PRs are drafts; answers are private DMs; the only public actions (review comments + the "added comments" thread reply) sit behind the grace window ("reply `stop` to cancel").
-- **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own or already-reviewed PRs.
+- **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own PR or repeats a review of code it already commented on.
 - **Audit trail** — every processed message is appended to `history.jsonl`; live worker progress streams to `logs/watcher.log`.
 
 ⚠️ **Understand the risk**: workers run `claude -p --dangerously-skip-permissions` with write access to your repos, triggered by incoming Slack messages. Anyone who can mention you can start a worker (it only ever opens draft PRs, but still). Run it only in workspaces you trust, or set `WORKER_CLAUDE_ARGS=--permission-mode acceptEdits` for a read-mostly mode that stops at push/PR steps.

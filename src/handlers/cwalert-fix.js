@@ -2,7 +2,7 @@ import { runClaude, CancelledError } from "../claude.js";
 import { createWorktree, ensureRepo, removeWorktree } from "../git.js";
 import { waitForChecks, mergePr } from "../github.js";
 import { log } from "../log.js";
-import { minutes, trim, watchForStop } from "./shared.js";
+import { minutes, toBranchName, trim, watchForStop } from "./shared.js";
 
 const HEARTBEAT_MS = 5 * 60_000;
 
@@ -47,7 +47,7 @@ ${eventContext(event)}
 
 Mandatory workflow for this repository:
 1. You are already in an ISOLATED git worktree checked out at the latest \`origin/${base}\` (detached). The user's main working copy lives elsewhere — never cd into it or touch it. Branch from here.
-2. Create a branch named \`${branchName}\`.
+2. Create a branch named exactly \`${branchName}\` — do not invent another name. If that branch already exists on origin, append \`-2\` (then \`-3\`, …); never force-push over someone else's branch.
 3. DUPLICATE-WORK CHECK before writing any code:
    - Run \`gh pr list --state all --limit 20\` and \`git log origin/${base} --oneline -20\`; search for this error, the files involved, and keywords from the message.
    - If existing work already fixes this error (open/merged PR, recent commit), STOP, make no changes, and put that PR/commit link in SLACK_DRAFT.
@@ -119,7 +119,10 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
     return { status: "needs_repo", repo, error: err.message };
   }
 
-  const branchName = `auto/cwalert-${String(event.ts)}`;
+  // Named after the error itself — a timestamped branch tells nobody what the PR fixes.
+  const branchName = toBranchName(String(event.sample ?? "").split("\n")[0], {
+    fallback: `cwalert-${event.ts}`,
+  });
   const dmChannel = await slack.postToSelf(
     selfId,
     `:rotating_light: *Auto-fix picked up a ${originOf(event)} ${event.severity}*\n` +
@@ -160,6 +163,7 @@ export async function handleCwalertFix({ event, config, slack, selfId }) {
       timeoutMs: config.workerTimeoutMs,
       extraArgs: config.workerClaudeArgs,
       model: config.workerModel,
+      fallbackModel: config.workerFallbackModel,
       label: `cwalert:${repo}`,
       signal: controller.signal,
     });

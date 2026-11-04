@@ -9,6 +9,11 @@ const MAX_ATTEMPT_KEYS = 500;
 // app itself classified); the CloudWatch alerter only ever emits `error`. Anything else
 // (warn/info) is noise we must not open PRs for.
 const FIXABLE_SEVERITIES = new Set(["error", "fatal"]);
+// Severities that must reach the human FAST but must never open a PR. `flood` = the alerter saw
+// an abnormal volume of a NON-error line (e.g. a bot hammering a public form so every lead is
+// mailed out "successfully"). There is no stack trace to fix from and the call — block the
+// sender, add a captcha, throttle — is the human's; a worker would only guess at code.
+const ALERT_SEVERITIES = new Set(["flood"]);
 
 export function loadCwalertState(stateFile) {
   if (!fs.existsSync(stateFile)) return { initialized: false, offset: 0, attempts: {} };
@@ -58,9 +63,11 @@ export function readNewEvents(eventLog, state) {
 }
 
 /**
- * Pure selection: which fresh error signatures to fix this poll. Dedupes by key (newest wins),
- * drops signatures still inside the cooldown, orders newest-first, and splits at maxPerPoll.
- * @returns {{ toFix: object[], overflow: object[] }}
+ * Pure selection: what to act on this poll. Dedupes by key (newest wins), drops signatures still
+ * inside the cooldown, orders newest-first, then splits by lane — fixable errors are capped at
+ * maxPerPoll (each one costs a worker + a PR), alert-only events are never capped (a DM is cheap,
+ * and holding back an in-progress flood is exactly the failure we are fixing).
+ * @returns {{ toFix: object[], overflow: object[], toAlert: object[] }}
  */
 export function selectEvents(lines, attempts, { cooldownMs, maxPerPoll, nowMs }) {
   const byKey = new Map();
@@ -71,12 +78,29 @@ export function selectEvents(lines, attempts, { cooldownMs, maxPerPoll, nowMs })
     } catch {
       continue;
     }
-    if (e && FIXABLE_SEVERITIES.has(e.severity) && e.key) byKey.set(e.key, e); // later line = newer occurrence
+    if (!e || !e.key) continue;
+    if (FIXABLE_SEVERITIES.has(e.severity) || ALERT_SEVERITIES.has(e.severity)) byKey.set(e.key, e); // later line = newer occurrence
   }
   const fresh = [...byKey.values()]
     .filter((e) => !attempts[e.key] || nowMs - attempts[e.key] >= cooldownMs)
     .sort((a, b) => (b.lastTs ?? b.ts ?? 0) - (a.lastTs ?? a.ts ?? 0));
-  return { toFix: fresh.slice(0, maxPerPoll), overflow: fresh.slice(maxPerPoll) };
+  const toAlert = fresh.filter((e) => ALERT_SEVERITIES.has(e.severity));
+  const fixable = fresh.filter((e) => FIXABLE_SEVERITIES.has(e.severity));
+  return { toFix: fixable.slice(0, maxPerPoll), overflow: fixable.slice(maxPerPoll), toAlert };
+}
+
+/** Loud, self-contained DM for an alert-only event — everything needed to judge it without AWS. */
+export function renderAlert(event) {
+  const window =
+    event.firstTs && event.lastTs && event.lastTs > event.firstTs
+      ? `in ${Math.max(1, Math.round((event.lastTs - event.firstTs) / 60_000))} min`
+      : "in one alert window";
+  return trim(
+    `:rotating_light: *FLOOD — ${event.pattern ?? event.severity}* in *${event.service}* (${event.env ?? "unknown"})\n` +
+      `*${event.count ?? "?"}×* ${window} — these are NOT errors, so nothing auto-fixes them. Check now.\n` +
+      `> ${String(event.sample ?? "").replace(/\s+/g, " ").slice(0, 400)}\n` +
+      `Logs: ${event.consoleUrl ?? "n/a"}`,
+  );
 }
 
 /**
@@ -101,24 +125,34 @@ export async function pollCwalert(config, slack, selfId, nowMs = Date.now()) {
     return;
   }
 
-  const { toFix, overflow } = selectEvents(lines, state.attempts, {
+  const { toFix, overflow, toAlert } = selectEvents(lines, state.attempts, {
     cooldownMs: cfg.cooldownMs,
     maxPerPoll: cfg.maxPerPoll,
     nowMs,
   });
-  if (toFix.length === 0 && overflow.length === 0) {
+  if (toFix.length === 0 && overflow.length === 0 && toAlert.length === 0) {
     saveCwalertState(cfg.stateFile, state); // still advance the offset
     return;
   }
-  log(`cwalert source: ${toFix.length} to fix, ${overflow.length} over the per-poll cap`);
+  log(`cwalert source: ${toAlert.length} to alert, ${toFix.length} to fix, ${overflow.length} over the per-poll cap`);
 
   // Mark everything we picked as attempted up front so a crash mid-fix can't re-trigger it.
-  for (const e of [...toFix, ...overflow]) state.attempts[e.key] = nowMs;
+  for (const e of [...toAlert, ...toFix, ...overflow]) state.attempts[e.key] = nowMs;
   saveCwalertState(cfg.stateFile, state);
 
   if (config.dryRun) {
-    log(`cwalert source: DRY RUN — would fix ${toFix.map((e) => e.service).join(", ")}`);
+    const would = [...toAlert.map((e) => `alert ${e.service}`), ...toFix.map((e) => `fix ${e.service}`)];
+    log(`cwalert source: DRY RUN — would ${would.join(", ") || "do nothing"}`);
     return;
+  }
+
+  // Alerts first: a flood is in progress right now, and a fix worker below can run for minutes.
+  // No per-poll cap here. attempts[] was stamped above, so a capped alert would be silenced for
+  // the whole cooldown and only ever mentioned in a log file — the exact "nobody told me"
+  // failure this lane exists to fix. Volume is already bounded upstream (the alerter re-alerts a
+  // signature at most once per REALERT_HOURS) and downstream (the cooldown).
+  for (const event of toAlert) {
+    await slack.postToSelf(selfId, renderAlert(event)).catch((err) => log(`cwalert source: alert DM failed for ${event.key}: ${err.message}`));
   }
 
   for (const event of toFix) {

@@ -29,3 +29,35 @@ test("reviewOutcome replies in the thread only when the diff was actually review
   assert.equal(reviewOutcome("no markers at all").threadReply, null);
   assert.equal(reviewOutcome(report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: oops")).threadReply, null);
 });
+
+// The coverage lines were added between REVIEW_STATUS and SLACK_REPLY. If they broke the
+// surrounding parsing the bot would go silent in the thread on every review, so the full
+// current report shape is pinned here.
+test("reviewOutcome parses the coverage lines without disturbing the reply contract", () => {
+  const outcome = reviewOutcome(
+    report(
+      [
+        "REVIEW_STATUS: reviewed",
+        "REVIEW_FILES: 85/85",
+        "REVIEW_CANDIDATES: 11/3",
+        "REVIEW_TESTS: 1/18",
+        "REVIEW_COMMENTS: 3",
+        "SLACK_REPLY: Mình đã comment vài chỗ trên PR.",
+      ].join("\n"),
+    ),
+  );
+  assert.equal(outcome.coverage, "read 85/85 files, 11/3 candidates verified, flagged 1/18 test files");
+  assert.equal(outcome.commentCount, 3);
+  assert.equal(outcome.threadReply, "Mình đã comment vài chỗ trên PR.");
+
+  // A worker that omits them still parses — coverage is reporting detail, never a gate.
+  const bare = reviewOutcome(report("REVIEW_STATUS: reviewed\nREVIEW_COMMENTS: 0\nSLACK_REPLY: Looks good."));
+  assert.equal(bare.coverage, "");
+  assert.equal(bare.threadReply, "LGTM!");
+
+  // A PR that added no test files must not push "flagged 0/0" noise into every clean DM.
+  const noTests = reviewOutcome(
+    report("REVIEW_STATUS: reviewed\nREVIEW_FILES: 3/3\nREVIEW_TESTS: 0/0\nREVIEW_COMMENTS: 0\nSLACK_REPLY: Looks good."),
+  );
+  assert.equal(noTests.coverage, "read 3/3 files");
+});

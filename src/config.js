@@ -51,15 +51,25 @@ export function loadConfig() {
     docsContextDir: env.DOCS_CONTEXT_DIR || "",
     claudeBin: env.CLAUDE_BIN || "claude",
     classifierModel: env.CLASSIFIER_MODEL || "haiku",
-    workerModel: env.WORKER_MODEL || "sonnet",
-    reviewModel: env.REVIEW_MODEL || "opus",
+    // Prefer Fable for the heavy workers/review; fall back to Opus when Fable is
+    // restricted on the account (see runClaude's fallback in claude.js).
+    workerModel: env.WORKER_MODEL || "claude-fable-5",
+    workerFallbackModel: env.WORKER_FALLBACK_MODEL || "claude-opus-4-8",
+    reviewModel: env.REVIEW_MODEL || "claude-fable-5",
+    reviewFallbackModel: env.REVIEW_FALLBACK_MODEL || "claude-opus-4-8",
+    // Hunt list injected into every review prompt. A markdown file so the team can tune
+    // what the reviewer looks for without touching code. Point it at a shared docs repo
+    // to share one list across machines.
+    reviewChecklistFile: path.resolve(BASE_DIR, env.REVIEW_CHECKLIST_FILE || "docs/review-checklist.md"),
     workerClaudeArgs: (env.WORKER_CLAUDE_ARGS ?? "--dangerously-skip-permissions")
       .split(" ")
       .filter(Boolean),
     contextWindowSeconds: intOption(env.CONTEXT_WINDOW_SECONDS, 900, { min: 0 }),
     workerTimeoutMs: intOption(env.WORKER_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     workerGraceMs: intOption(env.WORKER_GRACE_MINUTES, 3, { min: 0 }) * 60_000,
-    reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 30, { min: 1 }) * 60_000,
+    // 45 min: a review that reads every changed file (and fans out on a big PR) needs
+    // more than the 30 min a single skim took.
+    reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     answerTimeoutMs: intOption(env.ANSWER_TIMEOUT_MINUTES, 10, { min: 1 }) * 60_000,
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
     // ── CloudWatch error → auto-fix source (off unless CWALERT_ENABLED) ──
@@ -99,6 +109,11 @@ export function loadConfig() {
   }
   if (!fs.existsSync(config.reposRoot)) {
     errors.push(`REPOS_ROOT does not exist: ${config.reposRoot}`);
+  }
+  // Fail loud: without the hunt list the reviewer silently falls back to a plausibility
+  // skim, which is exactly the 0-comment failure this file exists to prevent.
+  if (!fs.existsSync(config.reviewChecklistFile)) {
+    errors.push(`REVIEW_CHECKLIST_FILE does not exist: ${config.reviewChecklistFile}`);
   }
   if (errors.length) {
     throw new Error(`Invalid configuration:\n - ${errors.join("\n - ")}`);

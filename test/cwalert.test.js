@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { selectEvents, readNewEvents, loadCwalertState, saveCwalertState } from "../src/sources/cwalert.js";
+import { selectEvents, readNewEvents, loadCwalertState, saveCwalertState, renderAlert } from "../src/sources/cwalert.js";
 import { repoForService, handleCwalertFix, autoMergeDecision } from "../src/handlers/cwalert-fix.js";
 
 const HOUR = 3_600_000;
@@ -95,6 +95,36 @@ test("autoMergeDecision merges only an RC crash with a confident, tested, small,
     assert.equal(d.merge, false, label);
     assert.ok(d.reason.length > 0, `${label} states a reason`);
   }
+});
+
+// Regression (2026-08-07): a bot hammering the public contact form mailed every lead out through
+// CustomerIO. The producer now emits that as severity "flood". It must reach the human FAST but
+// must never open a PR — the lines are successful sends, there is nothing for a worker to fix.
+test("selectEvents routes a flood to the alert lane, never to the fix lane", () => {
+  const flood = JSON.stringify({
+    v: 1, ts: 5_000, key: "us-east-1:api-prod|customerio-send-flood|<sig>", severity: "flood",
+    service: "legacy-api", env: "prod", pattern: "customerio-send-flood", count: 312,
+    firstTs: 4_000, lastTs: 5_000, sample: "info: [CustomerIO] Event successfully triggered",
+    consoleUrl: "https://console/logs",
+  });
+  const { toFix, overflow, toAlert } = selectEvents([flood, line({ key: "e1" })], {}, { cooldownMs: HOUR, maxPerPoll: 2, nowMs: 10_000 });
+  assert.deepEqual(toAlert.map((e) => e.pattern), ["customerio-send-flood"]);
+  assert.deepEqual(toFix.map((e) => e.key), ["e1"], "only the real error is fixable");
+  assert.deepEqual(overflow, []);
+
+  // The per-poll cap protects worker/PR cost; it must not hold back an in-progress flood.
+  const capped = selectEvents([flood, line({ key: "a" }), line({ key: "b" })], {}, { cooldownMs: HOUR, maxPerPoll: 1, nowMs: 10_000 });
+  assert.equal(capped.toAlert.length, 1);
+  assert.equal(capped.toFix.length, 1);
+
+  // Cooldown still applies, so a running flood does not re-DM every poll.
+  const attempts = { "us-east-1:api-prod|customerio-send-flood|<sig>": 10_000 };
+  assert.equal(selectEvents([flood], attempts, { cooldownMs: HOUR, maxPerPoll: 2, nowMs: 10_000 + HOUR / 2 }).toAlert.length, 0);
+
+  const dm = renderAlert(JSON.parse(flood));
+  assert.match(dm, /FLOOD/);
+  assert.match(dm, /312/);
+  assert.match(dm, /console\/logs/);
 });
 
 test("selectEvents suppresses signatures inside the cooldown window", () => {

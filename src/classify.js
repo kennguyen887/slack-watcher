@@ -33,9 +33,10 @@ Classify it:
 Default rule: when in doubt between "question" and "ignore", pick "ignore" — only act when the message clearly expects an answer or a code change from me. (But when a CODE request is clearly intended and merely lacks detail, that is "needs_clarification", not "ignore".)
 
 Respond with ONLY a JSON object, no prose:
-{"kind": "code_request" | "pr_review" | "question" | "needs_clarification" | "ignore", "repo": "<repository name or null>", "summary": "<one sentence, same language as the message>", "pr_url": "<the GitHub PR URL or null>", "questions": ["<short clarifying question>", ...]}
+{"kind": "code_request" | "pr_review" | "question" | "needs_clarification" | "ignore", "repo": "<repository name or null>", "summary": "<one sentence, same language as the message>", "branch": "<git branch name or null>", "pr_url": "<the GitHub PR URL or null>", "questions": ["<short clarifying question>", ...]}
 
 "repo" must be one of the available repositories (only for code_request; null otherwise or if unclear).
+"branch" only for code_request: \`fix/<slug>\` for a bug fix, \`feat/<slug>\` for new behavior, where <slug> is 2-5 words in ENGLISH kebab-case naming the issue (e.g. "fix/price-filter-on-listing-page") — even when the message is in another language.
 "pr_url" only for pr_review: the full GitHub pull request URL found in the message or context.
 "questions" only for needs_clarification: 1-3 short questions in the same language as the message, phrased so they can be sent back to the requester as-is.`;
 }
@@ -61,6 +62,7 @@ export async function classifyMention(mention, repos, config, contextBlock = "")
     kind: parsed.kind,
     repo: repos.includes(parsed.repo) ? parsed.repo : null,
     summary: parsed.summary ?? "",
+    branch: typeof parsed.branch === "string" ? parsed.branch : "",
     prUrl: typeof parsed.pr_url === "string" ? (parsed.pr_url.match(PR_URL_RE)?.[0] ?? null) : null,
     questions: Array.isArray(parsed.questions) ? parsed.questions.slice(0, 3) : [],
   };
