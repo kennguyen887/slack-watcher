@@ -9,7 +9,6 @@ import { classifyMention } from "./classify.js";
 import { PR_URL_RE } from "./github.js";
 import { HANDLERS } from "./handlers/index.js";
 import { findReviewFollowup, handlePrReviewFollowup } from "./handlers/pr-review.js";
-import { pollCwalert } from "./sources/cwalert.js";
 import { log, stamp } from "./log.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -252,31 +251,12 @@ async function main() {
   process.on("SIGTERM", () => (stopping = true));
   process.on("SIGINT", () => (stopping = true));
 
-  if (config.cwalert.enabled) {
-    log(`cwalert source ON — event log ${config.cwalert.eventLog}, base ${config.cwalert.baseBranch}, cooldown ${Math.round(config.cwalert.cooldownMs / 3_600_000)}h`);
-    // Auto-merge lands unreviewed code on a shared branch — never let it be a surprise: say so
-    // on every start, so the log itself shows whether the kill switch is on.
-    log(
-      config.cwalert.autoMerge
-        ? `cwalert auto-merge ARMED for env ${config.cwalert.autoMergeEnvs.join("/")} — fatal only, confidence >= ${config.cwalert.autoMergeMinConfidence}/10, diff <= ${config.cwalert.autoMergeMaxFiles} files/${config.cwalert.autoMergeMaxLines} lines (CWALERT_AUTOMERGE=0 to disarm)`
-        : "cwalert auto-merge OFF — every fix PR waits for you",
-    );
-  }
-
   do {
     try {
       await pollOnce(config, slack, userId, query, state);
     } catch (err) {
       const cause = err.cause ? ` (${err.cause.code ?? err.cause.message ?? err.cause})` : "";
       log(`poll error: ${err.message}${cause}`);
-    }
-    // CloudWatch auto-fix source — isolated try/catch so a failure never stalls mention polling.
-    if (config.cwalert.enabled) {
-      try {
-        await pollCwalert(config, slack, userId);
-      } catch (err) {
-        log(`cwalert poll error: ${err.message}`);
-      }
     }
     if (!once) await sleep(config.pollIntervalSeconds * 1000);
   } while (!once && !stopping);

@@ -106,16 +106,6 @@ export async function waitForChecks(prUrl, { timeoutMs = 10 * 60_000, pollMs = 3
   return status;
 }
 
-/** Squash-merge a PR. Throws with gh's stderr when GitHub refuses (protection, conflict, …). */
-export function mergePr(prUrl) {
-  try {
-    gh(["pr", "merge", prUrl, "--squash", "--delete-branch"], 120_000);
-  } catch (err) {
-    throw new Error(err.stderr?.toString().trim() || err.message);
-  }
-  return JSON.parse(gh(["pr", "view", prUrl, "--json", "mergeCommit"])).mergeCommit?.oid ?? "";
-}
-
 /** My GitHub login (gh's own auth), resolved once per process. */
 let cachedLogin = null;
 function myLogin() {

@@ -107,15 +107,14 @@ export function loadConfig() {
     workerModel: env.WORKER_MODEL || "sonnet",
     reviewModel: env.REVIEW_MODEL || "opus",
     // `claude --effort` per role: thinking depth is most of a run's output tokens, so each role
-    // gets only what its job needs. Classification is a lookup; reviews and answers go public.
+    // gets only what its job needs. Classification is a lookup; reviews go public.
     classifierEffort: env.CLASSIFIER_EFFORT || "low",
     workerEffort: env.WORKER_EFFORT || "medium",
     reviewEffort: env.REVIEW_EFFORT || "medium",
-    answerEffort: env.ANSWER_EFFORT || "medium",
     workerClaudeArgs: (env.WORKER_CLAUDE_ARGS ?? "--dangerously-skip-permissions")
       .split(" ")
       .filter(Boolean),
-    // Appended to every worker run (code, review, answer, cwalert, daily report, style).
+    // Appended to every worker run (code, review, daily report).
     // ToolSearch stays in: it is how a worker loads the (deferred) Linear MCP tools.
     workerLeanArgs: leanWorkerArgs({
       tools: listOption(env.WORKER_TOOLS, "Bash,Read,Grep,Glob,Edit,Write,ToolSearch"),
@@ -132,15 +131,6 @@ export function loadConfig() {
     workerTimeoutMs: intOption(env.WORKER_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     workerGraceMs: intOption(env.WORKER_GRACE_MINUTES, 3, { min: 0 }) * 60_000,
     reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 30, { min: 1 }) * 60_000,
-    // ── answering teammates' questions ──
-    // OFF by default: this is the one handler that says something substantive in PUBLIC under
-    // your name, and Slack has no delete — opting in has to be deliberate.
-    questionAutoReply: env.QUESTION_AUTO_REPLY === "1" || env.QUESTION_AUTO_REPLY === "true",
-    answerModel: env.ANSWER_MODEL || env.REVIEW_MODEL || "opus",
-    answerTimeoutMs: intOption(env.ANSWER_TIMEOUT_MINUTES, 10, { min: 1 }) * 60_000,
-    // A chat answer that runs long is a sign the worker wrote an essay instead of a reply;
-    // over the cap it becomes a private draft rather than a wall of text in the channel.
-    answerMaxChars: intOption(env.ANSWER_MAX_CHARS, 600, { min: 80, max: 3000 }),
     // How many PRs from ONE multi-PR review message to review at once. The git worktree
     // setup is serialized regardless; this caps the concurrent claude review workers.
     reviewConcurrency: intOption(env.REVIEW_CONCURRENCY, 3, { min: 1, max: 6 }),
@@ -159,28 +149,6 @@ export function loadConfig() {
     worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 1, { min: 1 }),
     worktreeKeepMax: intOption(env.WORKTREE_KEEP_MAX, 6, { min: 1 }),
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
-    // ── CloudWatch error → auto-fix source (off unless CWALERT_ENABLED) ──
-    cwalert: {
-      enabled: env.CWALERT_ENABLED === "1" || env.CWALERT_ENABLED === "true",
-      eventLog: env.CWALERT_EVENT_LOG || path.join(BASE_DIR, "events", "cwalert.jsonl"),
-      baseBranch: env.CWALERT_BASE_BRANCH || env.BASE_BRANCH || "main",
-      draft: env.CWALERT_DRAFT === "1" || env.CWALERT_DRAFT === "true",
-      cooldownMs: intOption(env.CWALERT_COOLDOWN_HOURS, 12, { min: 0 }) * 3_600_000,
-      maxPerPoll: intOption(env.CWALERT_MAX_PER_POLL, 2, { min: 1 }),
-      // service (from the alerter) → repo folder under REPOS_ROOT. Fallback strips a
-      // trailing " (...)" suffix, e.g. "listings-api (rc scheduler)" → "listings-api".
-      serviceRepos: parseJsonEnv(env.CWALERT_SERVICE_REPOS),
-      stateFile: path.join(BASE_DIR, "cwalert-state.json"),
-      // ── auto-merge (RC only) ──
-      // A fix for a service that is DOWN on RC may merge itself; prod never does. Every gate
-      // below must hold — see autoMergeDecision() in handlers/cwalert-fix.js.
-      autoMerge: env.CWALERT_AUTOMERGE === "1" || env.CWALERT_AUTOMERGE === "true",
-      autoMergeEnvs: (env.CWALERT_AUTOMERGE_ENVS || "rc").split(",").map((s) => s.trim()).filter(Boolean),
-      autoMergeMinConfidence: intOption(env.CWALERT_AUTOMERGE_MIN_CONFIDENCE, 9, { min: 1, max: 10 }),
-      autoMergeMaxFiles: intOption(env.CWALERT_AUTOMERGE_MAX_FILES, 5, { min: 1 }),
-      autoMergeMaxLines: intOption(env.CWALERT_AUTOMERGE_MAX_LINES, 200, { min: 1 }),
-      autoMergeChecksTimeoutMs: intOption(env.CWALERT_AUTOMERGE_CHECKS_TIMEOUT_MIN, 10, { min: 1 }) * 60_000,
-    },
     dailyReport: {
       enabled: env.DAILY_REPORT_ENABLED === "1" || env.DAILY_REPORT_ENABLED === "true",
       channel: env.DAILY_REPORT_CHANNEL || "",
@@ -223,7 +191,7 @@ export function loadConfig() {
       errors.push(`SLACK_WEBHOOKS["${channel}"] looks like a DM target — webhooks post to a channel only`);
     }
   }
-  for (const key of ["CLASSIFIER_EFFORT", "WORKER_EFFORT", "REVIEW_EFFORT", "ANSWER_EFFORT"]) {
+  for (const key of ["CLASSIFIER_EFFORT", "WORKER_EFFORT", "REVIEW_EFFORT"]) {
     if (env[key] && !EFFORT_LEVELS.has(env[key])) {
       errors.push(`${key} must be one of ${[...EFFORT_LEVELS].join(", ")}`);
     }
