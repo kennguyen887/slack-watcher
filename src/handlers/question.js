@@ -112,6 +112,9 @@ Then decide whether I would answer it myself or hand it back to a human. Report 
 When in doubt, escalate. A wrong answer posted under my name costs far more than a slow one.
 ${styleBlock(profile)}
 Write the reply as ONE Slack message in Vietnamese, matching the profile above:
+- I am older than every teammate: call the asker "em" and refer to myself as "anh" (never "tớ",
+  "mình", "tôi"). This overrides any pronoun in the profile.
+- Write it the way I would type it in chat: natural, casual, short. Not a formal or textbook tone.
 - Say the answer and nothing else. No greeting, no sign-off, no "hy vọng giúp được", no recap of
   their question, no offer to help further, no bullet list unless I would really use one.
 - Keep it to the length I actually write — a sentence or two. Long is wrong.

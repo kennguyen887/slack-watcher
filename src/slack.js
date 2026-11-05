@@ -1,3 +1,5 @@
+import { log } from "./log.js";
+
 const SLACK_API = "https://slack.com/api";
 const MAX_RETRIES = 3;
 // A hung socket must never wedge a poll: in one-shot (cron) mode the overlap
@@ -147,7 +149,11 @@ ${lines.join("\n").slice(0, 4000)}
  *                  its webhook (as the webhook's app); everything else posts as the token's
  *                  user. Empty map = today's behavior, everything as you.
  */
-export function createSlackClient(token, webhooks = {}) {
+/**
+ * @param {{ selfDm?: boolean }} [options] selfDm=false turns every self-DM into a log line: the
+ *   watcher then never messages its user (results, drafts, failures stay in logs/watcher.log).
+ */
+export function createSlackClient(token, webhooks = {}, { selfDm = true } = {}) {
   return {
     async whoAmI() {
       const { user_id, user, team } = await call(token, "auth.test", {});
@@ -291,6 +297,10 @@ export function createSlackClient(token, webhooks = {}) {
     },
 
     async postToSelf(userId, text) {
+      if (!selfDm) {
+        log(`self-DM off, not sent: ${text.slice(0, 300).replace(/\n/g, " ")}`);
+        return null;
+      }
       // chat.postMessage accepts a user ID directly for the self-DM — avoids
       // conversations.open, which would require the extra im:write scope.
       const body = await call(token, "chat.postMessage", {
@@ -320,6 +330,7 @@ export function createSlackClient(token, webhooks = {}) {
 
     /** Messages in a conversation since oldestTs — used to catch a manual "stop" reply in the self-DM. */
     async fetchMessagesSince(channelId, oldestTs) {
+      if (!channelId) return []; // self-DM off: there is no DM to read a "stop" reply from
       const body = await call(
         token,
         "conversations.history",

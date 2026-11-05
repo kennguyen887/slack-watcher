@@ -158,6 +158,8 @@ export function loadConfig() {
     mentionLookbackHours: intOption(env.MENTION_LOOKBACK_HOURS, 72, { min: 1 }),
     worktreeKeepDays: intOption(env.WORKTREE_KEEP_DAYS, 1, { min: 1 }),
     worktreeKeepMax: intOption(env.WORKTREE_KEEP_MAX, 6, { min: 1 }),
+    // 0 = never DM the user: results, drafts and failures only go to logs/watcher.log.
+    selfDm: env.SELF_DM !== "0" && env.SELF_DM !== "false",
     dryRun: env.DRY_RUN === "1" || env.DRY_RUN === "true",
     dailyReport: {
       enabled: env.DAILY_REPORT_ENABLED === "1" || env.DAILY_REPORT_ENABLED === "true",
