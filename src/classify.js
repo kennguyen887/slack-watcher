@@ -3,11 +3,11 @@ import { buildRepoHints } from "./repos.js";
 import { describeAttachments } from "./attachments.js";
 import { PR_URL_RE } from "./github.js";
 
-const VALID_KINDS = new Set(["code_request", "pr_review", "needs_clarification", "ignore"]);
+const VALID_KINDS = new Set(["code_request", "pr_review", "question", "needs_clarification", "ignore"]);
 
 function classificationPrompt(mention, repos, repoHints, contextBlock) {
   const pickupNote = mention.prLinkOnly
-    ? `NOTE: I was NOT mentioned in this message — it was picked up only because it contains a GitHub PR link. Therefore the ONLY valid kinds are "pr_review" (the message shares a PR asking for review/feedback/checking, explicitly or implicitly — e.g. posting a fresh PR into a dev channel for the team) and "ignore" (deploy notes, CI output, discussing an already-merged/old PR, status updates). Never code_request/needs_clarification here.
+    ? `NOTE: I was NOT mentioned in this message — it was picked up only because it contains a GitHub PR link. Therefore the ONLY valid kinds are "pr_review" (the message shares a PR asking for review/feedback/checking, explicitly or implicitly — e.g. posting a fresh PR into a dev channel for the team) and "ignore" (deploy notes, CI output, discussing an already-merged/old PR, status updates). Never code_request/question/needs_clarification here.
 `
     : "";
   return `You classify a Slack message ${mention.prLinkOnly ? "from my team" : "that mentions me"}, so an automation can decide what to do with it.
@@ -27,12 +27,13 @@ Classify it:
 - "code_request": asks me to fix a bug, build a feature, or change code/config — AND contains enough detail to act on safely (what is broken / what is wanted, and where, at least roughly).
 - "pr_review": asks me to review, check, or approve a pull request, and a GitHub PR link appears in the message or the conversation context.
 - "needs_clarification": looks like a request aimed at me, but is too vague or missing key information to act on (e.g. "fix the bug" with no description, no screen/feature named, no expected behavior). When in doubt between code_request and needs_clarification, pick needs_clarification.
-- "ignore": the mention does not ask me to do code work or a PR review. This includes: questions and requests for information/opinion (a separate job answers those), status updates ("em đã update rồi"), FYI/sharing info, acknowledgments, thanks, agreement ("LGTM", "đc đó a"), social pings, meeting reminders, tagging me just for visibility/CC, rhetorical mentions inside a statement, and requests for personal actions only I can do myself (join a call, check DM) — I will see those in Slack anyway. A review/approve request WITHOUT any PR link anywhere in message or context is also "ignore".
+- "question": EXPLICITLY asks me to answer something and expects a reply from me (a real question or a request for information/opinion directed at me).
+- "ignore": the mention does not ask me to answer or do anything. This includes: status updates ("em đã update rồi"), FYI/sharing info, acknowledgments, thanks, agreement ("LGTM", "đc đó a"), social pings, meeting reminders, tagging me just for visibility/CC, rhetorical mentions inside a statement, and requests for personal actions only I can do myself (join a call, check DM) — I will see those in Slack anyway. A review/approve request WITHOUT any PR link anywhere in message or context is also "ignore".
 
-Default rule: when in doubt, pick "ignore" — only act when the message clearly expects a code change or a PR review from me. (But when a CODE request is clearly intended and merely lacks detail, that is "needs_clarification", not "ignore".)
+Default rule: when in doubt between "question" and "ignore", pick "ignore" — only act when the message clearly expects an answer or a code change from me. (But when a CODE request is clearly intended and merely lacks detail, that is "needs_clarification", not "ignore".)
 
 Respond with ONLY a JSON object, no prose:
-{"kind": "code_request" | "pr_review" | "needs_clarification" | "ignore", "repo": "<repository name or null>", "summary": "<one sentence, same language as the message>", "pr_url": "<the GitHub PR URL or null>", "questions": ["<short clarifying question>", ...]}
+{"kind": "code_request" | "pr_review" | "question" | "needs_clarification" | "ignore", "repo": "<repository name or null>", "summary": "<one sentence, same language as the message>", "pr_url": "<the GitHub PR URL or null>", "questions": ["<short clarifying question>", ...]}
 
 "repo" must be one of the available repositories (only for code_request; null otherwise or if unclear).
 "pr_url" only for pr_review: the full GitHub pull request URL found in the message or context.

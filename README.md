@@ -10,7 +10,9 @@ A personal Slack → Claude Code automation daemon. It watches Slack for message
 | "Please review this PR: github.com/…/pull/123" (mention optional) | Reviews the PR → posts **inline comments on the exact changed lines** with ```suggestion``` blocks (real bugs only, minor nits skipped, plain English) → replies in the Slack thread; a clean PR gets an **approving review** instead, so the author can merge |
 | "@you I updated them" (a reply in a thread whose PRs were already reviewed) | **Resumes the very session that reviewed each PR** in its kept worktree → verifies each earlier finding is really fixed in the new commits → comments on what is still broken, or approves and replies "Re-checked the update — LGTM!" |
 | "@you fix the bug" (too vague) | DMs you 1-3 ready-to-send clarifying questions instead of guessing |
-| "@you sửa trên branch nào?" / any question to you | Ignored here — answering teammates is a separate scheduled Claude task |
+| "a ơi cái legacy-api này sửa trên branch nào?" | Researches the answer in the repos, then **replies in the thread as you, in your own learned voice** — Vietnamese teammates only, and only when it verified the answer and nothing needs your decision |
+| "Hey, do you think this is feasible?" (English) | Left to you — DM'd as a heads-up, never auto-answered. English is where clients and other teams live |
+| "@you when do we deploy?" (a call only you can make) | DM'd to you with a draft; nothing is posted |
 | "thanks @you!" / FYI / status update | Ignored — nothing happens |
 
 ### Review spec — what a model picks, versus what a pipeline picks
@@ -50,6 +52,7 @@ Built-in guardrails and quality-of-life:
 
 - **Near real-time without a server or admin rights** — polls Slack search with your own user token (default 45 s); no Slack app install to the workspace, runs on your machine via launchd (starts at login, auto-restarts).
 - **Reads the whole conversation** — pulls the thread or nearby messages, so requests split across several short messages are understood as one.
+- **Answers your Vietnamese teammates in your own voice** — `npm run learn-style` reads back through your own Slack history, throws away everything the watcher itself wrote, and distills how you actually type (length, particles, pronouns, which words you never translate) into a local style profile. Answers are researched in the real code before being written, and only a *verified* answer that needs no decision from you is posted; anything else lands in your DMs as a draft. English-speaking teammates are never auto-answered — that line is a language gate, not a translation setting.
 - **Sees attachments** — downloads screenshots and small log/text files from the message (where bug reports usually live) and feeds them to the worker; the classifier only sees a cheap text marker, so vision cost is paid once, by the worker, only when files exist.
 - **Grace window + kill switch** — DMs you "starting in N min, reply `stop` to cancel" before doing anything; replying `stop` also works **while the worker runs** (checked every 20 s) and kills the Claude session immediately, discarding the worktree.
 - **A review covers only what the mention asked for** — the PR links in the message itself, else the ones in its thread, else the requester's own nearby messages; a PR another teammate posted in the channel minutes earlier is never swept into the same review or its thread reply.
@@ -80,7 +83,14 @@ Built-in guardrails and quality-of-life:
    DRY_RUN=1 node src/index.js --once
    ```
    The first run sets the baseline to "now" — old mentions are never processed. Dry runs don't consume mentions.
-4. Install as a login agent — one poll per tick, so a `git pull` deploys itself on the next run:
+4. *(Optional, for auto-answering)* Teach it your voice, then turn the answering on:
+   ```bash
+   npm run learn-style          # reads back through your own Slack messages
+   ```
+   It writes `style/profile.md` (gitignored — it is distilled from real conversations). Set
+   `QUESTION_AUTO_REPLY=1` in `.env` to let it answer Vietnamese teammates in-thread as you;
+   without the profile it only ever drafts privately. Re-run it whenever your voice drifts.
+5. Install as a login agent — one poll per tick, so a `git pull` deploys itself on the next run:
    ```bash
    ./install.sh
    tail -f logs/watcher.log
@@ -98,23 +108,24 @@ poll (180s, Mon–Fri 09–19) ──► search.messages: mentions of you  ─�
                               fetch thread / nearby messages as context
                                                     ▼
                        classify (claude haiku): code_request │ pr_review │
-                    needs_clarification │ ignore
+                    needs_clarification │ question │ ignore
                                                     ▼
             DM "picked up — starting in N min, reply stop to cancel"
                                                     ▼
               disposable git worktree from origin/<BASE_BRANCH>
+                    (questions skip this — they only read)
                                                     ▼
           reviews only: ocr delegate ──► file list + per-file checklist
                    (no model, no API key — see "Review spec")
                                                     ▼
         claude -p worker (streamed progress in console log) ──► draft PR /
-        inline review comments ──► result DM
+        inline review comments / in-thread answer in your voice ──► result DM
 ```
 
 Safety properties:
 
 - **Your working copy is never touched** — workers run in isolated `git worktree`s under `worktrees/`, kept for `WORKTREE_KEEP_DAYS` days and capped at the newest `WORKTREE_KEEP_MAX` (so recent sessions stay resumable without the folder growing unbounded), then pruned automatically on startup.
-- **Nothing public without a gate** — PRs are drafts; every public action (review comments, the "added comments" thread reply) sits behind the grace window ("reply `stop` to cancel").
+- **Nothing public without a gate** — PRs are drafts; every public action (review comments, the "added comments" thread reply, and an auto-answer) sits behind the grace window ("reply `stop` to cancel"). An auto-answer clears four more gates on top: Vietnamese only, a learned voice must exist, the worker must have verified the answer and judged that it needs no decision from you, and it must fit `ANSWER_MAX_CHARS` — anything else becomes a private draft. The answer worker also runs with the file-editing tools denied at the CLI, because unlike the code and review workers it reads your real working copies rather than a disposable worktree.
 - **Duplicate-work protection** — grace window for "I'm already on it", plus the worker checks open PRs / recent commits / thread replies before writing code, and never reviews its own or already-reviewed PRs.
 - **A bad poll never eats a request** — a mention whose processing throws (expired CLI login, spend limit, timeout) stays queued and is retried on later polls, up to `MENTION_MAX_ATTEMPTS` (default 5); a PR review request is then retried hourly until it is `MENTION_LOOKBACK_HOURS` (default 72) old, and every poll scans that whole window, so a review asked for during an outage is still picked up when it ends; retrying is safe because the review worker never re-reviews a PR it already commented on. You get a DM on the first failure and on the give-up, and `npm run retry -- <channelId>:<messageTs>` puts an abandoned one back in the queue.
 - **Audit trail** — every processed message is appended to `history.jsonl`; live worker progress streams to `logs/watcher.log`.
@@ -139,20 +150,23 @@ flowchart TD
   F -- no --> C["Classify<br/>CLASSIFIER_MODEL haiku · low<br/>no tools / MCP / CLAUDE.md"]
   C -- code_request --> CR["Code worker → draft PR<br/>WORKER_MODEL sonnet · medium"]
   C -- pr_review --> OCR["ocr delegate (no model)"] --> RV["Review worker → inline comments / approve<br/>REVIEW_MODEL opus · medium"]
+  C -- question --> Q["Answer worker (read-only tools)<br/>ANSWER_MODEL opus · medium"]
   C -- needs_clarification --> CL["DM clarifying questions (no model)"]
   C -- ignore --> I[nothing]
   subgraph LA2["launchd com.slack-watcher-daily — every 300s"]
     G2{"Mon–Fri 09–19?<br/>thread open + random delay passed?<br/>not posted yet?"} -- no --> X2[exit]
     G2 -- yes --> DR["Daily report: gh PRs + Linear → 'Today:' reply<br/>WORKER_MODEL sonnet · medium"]
   end
-  CR & RV & RF & DR & C --> U[("logs/usage.jsonl<br/>tokens · cost · prompt")]
+  M["manual: npm run learn-style"] --> ST["Distill voice profile<br/>REVIEW_MODEL opus · medium"]
+  CR & RV & RF & Q & DR & ST & C --> U[("logs/usage.jsonl<br/>tokens · cost · prompt")]
 ```
 
 | Role | Model (env) | Effort (env) | Trigger |
 |---|---|---|---|
 | Classifier | `haiku` (`CLASSIFIER_MODEL`) | `low` (`CLASSIFIER_EFFORT`) | every new mention / PR link |
 | Code worker, daily report | `sonnet` (`WORKER_MODEL`) | `medium` (`WORKER_EFFORT`) | `code_request`, weekday report thread |
-| PR review + re-review | `opus` (`REVIEW_MODEL`) | `medium` (`REVIEW_EFFORT`) | `pr_review`, reply in a reviewed thread |
+| PR review + re-review, style learning | `opus` (`REVIEW_MODEL`) | `medium` (`REVIEW_EFFORT`) | `pr_review`, reply in a reviewed thread, `npm run learn-style` |
+| Answer worker | `opus` (`ANSWER_MODEL`, falls back to `REVIEW_MODEL`) | `medium` (`ANSWER_EFFORT`) | `question` (Vietnamese only) |
 
 **Lean workers.** Every worker runs with only the tools workers actually use
 (`WORKER_TOOLS`, default `Bash,Read,Grep,Glob,Edit,Write,ToolSearch`), only the Linear MCP server
@@ -201,6 +215,8 @@ One file = one concern; handlers split per mention kind, routed by a plain map.
 | `src/ocr.js` | Open Code Review's `ocr delegate` → the review spec block (file list + checklist) |
 | `ocr/rule.json` | The review bar itself, per file type — what to report, what to stay silent about |
 | `src/send.js` | Manual send CLI |
+| `src/style.js` | Loads the learned voice (`style/profile.md`, gitignored) |
+| `src/style-learn.js` | `npm run learn-style` — harvests your own messages and distills the profile |
 
 Handlers share one signature: `handle(ctx)` with `ctx = { mention, classification, contextBlock, config, slack, selfId }`. Adding a new mention kind = one new handler file + one entry in the `HANDLERS` map + one line in the classifier prompt.
 

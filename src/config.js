@@ -107,14 +107,15 @@ export function loadConfig() {
     workerModel: env.WORKER_MODEL || "sonnet",
     reviewModel: env.REVIEW_MODEL || "opus",
     // `claude --effort` per role: thinking depth is most of a run's output tokens, so each role
-    // gets only what its job needs. Classification is a lookup; reviews go public.
+    // gets only what its job needs. Classification is a lookup; reviews and answers go public.
     classifierEffort: env.CLASSIFIER_EFFORT || "low",
     workerEffort: env.WORKER_EFFORT || "medium",
     reviewEffort: env.REVIEW_EFFORT || "medium",
+    answerEffort: env.ANSWER_EFFORT || "medium",
     workerClaudeArgs: (env.WORKER_CLAUDE_ARGS ?? "--dangerously-skip-permissions")
       .split(" ")
       .filter(Boolean),
-    // Appended to every worker run (code, review, daily report).
+    // Appended to every worker run (code, review, answer, daily report, style).
     // ToolSearch stays in: it is how a worker loads the (deferred) Linear MCP tools.
     workerLeanArgs: leanWorkerArgs({
       tools: listOption(env.WORKER_TOOLS, "Bash,Read,Grep,Glob,Edit,Write,ToolSearch"),
@@ -131,6 +132,15 @@ export function loadConfig() {
     workerTimeoutMs: intOption(env.WORKER_TIMEOUT_MINUTES, 45, { min: 1 }) * 60_000,
     workerGraceMs: intOption(env.WORKER_GRACE_MINUTES, 3, { min: 0 }) * 60_000,
     reviewTimeoutMs: intOption(env.REVIEW_TIMEOUT_MINUTES, 30, { min: 1 }) * 60_000,
+    // ── answering teammates' questions ──
+    // OFF by default: this is the one handler that says something substantive in PUBLIC under
+    // your name, and Slack has no delete — opting in has to be deliberate.
+    questionAutoReply: env.QUESTION_AUTO_REPLY === "1" || env.QUESTION_AUTO_REPLY === "true",
+    answerModel: env.ANSWER_MODEL || env.REVIEW_MODEL || "opus",
+    answerTimeoutMs: intOption(env.ANSWER_TIMEOUT_MINUTES, 10, { min: 1 }) * 60_000,
+    // A chat answer that runs long is a sign the worker wrote an essay instead of a reply;
+    // over the cap it becomes a private draft rather than a wall of text in the channel.
+    answerMaxChars: intOption(env.ANSWER_MAX_CHARS, 600, { min: 80, max: 3000 }),
     // How many PRs from ONE multi-PR review message to review at once. The git worktree
     // setup is serialized regardless; this caps the concurrent claude review workers.
     reviewConcurrency: intOption(env.REVIEW_CONCURRENCY, 3, { min: 1, max: 6 }),
@@ -191,7 +201,7 @@ export function loadConfig() {
       errors.push(`SLACK_WEBHOOKS["${channel}"] looks like a DM target — webhooks post to a channel only`);
     }
   }
-  for (const key of ["CLASSIFIER_EFFORT", "WORKER_EFFORT", "REVIEW_EFFORT"]) {
+  for (const key of ["CLASSIFIER_EFFORT", "WORKER_EFFORT", "REVIEW_EFFORT", "ANSWER_EFFORT"]) {
     if (env[key] && !EFFORT_LEVELS.has(env[key])) {
       errors.push(`${key} must be one of ${[...EFFORT_LEVELS].join(", ")}`);
     }
