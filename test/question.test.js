@@ -5,7 +5,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { answerOutcome, deliverAnswer, handleQuestion } from "../src/handlers/question.js";
+import { ANSWER_TOOLS, answerOutcome, deliverAnswer, handleQuestion } from "../src/handlers/question.js";
+import { leanWorkerArgs } from "../src/config.js";
 import { vietnameseScore, isVietnamese } from "../src/handlers/shared.js";
 import { isMachineWritten, selectSamples, measure } from "../src/style-learn.js";
 
@@ -148,4 +149,30 @@ test("the style learner ignores this tool's own messages and the self-DM", () =>
   assert.deepEqual(samples.map((s) => s.ts), ["5"]);
   assert.equal(samples[0].inThread, true);
   assert.equal(measure(samples).count, 1);
+});
+
+// The answer worker runs WITHOUT --dangerously-skip-permissions, so --allowedTools is the whole
+// permission surface: an MCP server loaded by leanWorkerArgs but absent here is loadable and
+// unusable, and every call is denied mid-run. That drift is invisible — the worker just escalates.
+// It shipped once: 2026-11-06, COM-1326 arrived as a bare Linear link and the worker could not
+// read the question. Pinned both ways: the readers must be allowed, the writers must not.
+test("every MCP server the answer worker loads has read tools on its allowlist", () => {
+  const args = leanWorkerArgs({ tools: null, mcpServers: ["linear-api"] });
+  assert.ok(args.includes("--mcp-config"), "linear-api is still loaded for workers");
+
+  assert.ok(ANSWER_TOOLS.includes("ToolSearch"), "ToolSearch loads the deferred MCP tools");
+  for (const tool of ["linear_getIssueById", "linear_getComments", "linear_searchIssues"]) {
+    assert.ok(
+      ANSWER_TOOLS.includes(`mcp__linear-api__${tool}`),
+      `${tool} must be allowed — a question is often only readable in its Linear ticket`,
+    );
+  }
+});
+
+// Reading Linear is the point; writing to it under the user's name is not. The allowlist is the
+// only thing standing between the two, since the server exposes both.
+test("the answer worker may not write anywhere through the Linear MCP server", () => {
+  const WRITE = /^mcp__linear-api__linear_(create|update|delete|archive|unarchive|add|remove|assign|transfer|duplicate|complete|convert|set|mark|rotate|logout|generate|subscribe)/;
+  const writers = ANSWER_TOOLS.filter((t) => WRITE.test(t));
+  assert.deepEqual(writers, [], "only read-only Linear tools belong on the answer allowlist");
 });

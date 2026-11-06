@@ -30,12 +30,20 @@ import {
  *
  * Bash entries are prefix-scoped to read-only commands. `gh api` is deliberately absent — it
  * takes -X POST, which would let an answer worker write to GitHub.
+ *
+ * The Linear MCP read tools are named one by one for the same reason. A question usually arrives
+ * as a Linear link and nothing else — the Slack message carries no requirements — so without these
+ * the worker cannot read the question at all and escalates every time (observed 2026-11-06,
+ * COM-1326: "Quyen dung Linear bi tu choi"). The server is already loaded by
+ * config.workerLeanArgs; allowlisting it whole would also hand over linear_createComment and
+ * linear_updateIssue, so only the readers are listed. ToolSearch is how they get loaded.
  */
-const ANSWER_TOOLS = [
+export const ANSWER_TOOLS = [
   "--allowedTools",
   "Read",
   "Grep",
   "Glob",
+  "ToolSearch",
   "Bash(git log:*)",
   "Bash(git branch:*)",
   "Bash(git show:*)",
@@ -47,6 +55,14 @@ const ANSWER_TOOLS = [
   "Bash(gh issue view:*)",
   "Bash(ls:*)",
   "Bash(rg:*)",
+  "mcp__linear-api__linear_getIssueById",
+  "mcp__linear-api__linear_getIssues",
+  "mcp__linear-api__linear_searchIssues",
+  "mcp__linear-api__linear_getComments",
+  "mcp__linear-api__linear_getIssueHistory",
+  "mcp__linear-api__linear_getDocumentById",
+  "mcp__linear-api__linear_searchDocuments",
+  "mcp__linear-api__linear_getProjectById",
 ];
 
 /**
@@ -84,9 +100,15 @@ ${mention.text}
 """
 ${contextBlock}${attachmentsBlock}
 You are in the workspace root holding the team's repositories — my live working copies, not a
-scratch checkout. Your tools are restricted to reading (Read, Grep, Glob, and read-only git/gh
-commands); a write will be refused, so do not plan around one. Read code, docs and git history as
-much as you need.
+scratch checkout. Your tools are restricted to reading (Read, Grep, Glob, read-only git/gh
+commands, and the read-only Linear MCP tools — load them with ToolSearch, e.g.
+\`select:mcp__linear-api__linear_getIssueById,mcp__linear-api__linear_getComments\`); a write will
+be refused, so do not plan around one. Read code, docs and git history as much as you need.
+
+If the message links or names a Linear ticket, the question itself is usually IN that ticket and
+not in the Slack text: open the issue and read its comments — including the one the link's
+\`#comment-<id>\` anchor points at — before you decide anything. Answer only the points addressed
+to me; leave the ones tagged at someone else alone.
 
 Work out the answer FIRST, from the actual code and docs — not from what sounds plausible. Trace it
 to the real source: the route, the migration, the config, the commit. If the question names a file,
