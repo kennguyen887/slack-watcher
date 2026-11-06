@@ -6,6 +6,7 @@
 //   node src/send.js "@teammate" "PR is up: <link>"
 //   echo "multiline message" | node src/send.js "#dev-channel" -
 //   printf '%s' "$MSG" | node src/send.js --cap 300 "#dev-channel" -
+//   node src/send.js --thread "<permalink of the message you answer>" "#dev-channel" "done"
 //
 // Targets: "#channel-name" | "@username" (also matches display/real name; needs users:read
 // scope) | raw C…/D…/U… ID. Messages are sent from YOUR account — review before sending.
@@ -20,6 +21,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "./config.js";
 import { createSlackClient, resolveWebhook } from "./slack.js";
+import { parsePermalink } from "./edit_slack.js";
 
 export const DEFAULT_CAP = 2000;
 
@@ -42,10 +44,26 @@ export function validateSend(to, text, { cap = DEFAULT_CAP, allowedTargets = [] 
   return null;
 }
 
-export async function sendSlackMessage(slack, to, text) {
+export async function sendSlackMessage(slack, to, text, { threadTs = null } = {}) {
   if (!to || !text) throw new Error("both target and message are required");
   const channel = to.startsWith("@") ? await slack.resolveUserId(to) : to;
+  if (threadTs) return slack.replyInThread(channel, threadTs, text);
   return slack.post(channel, text);
+}
+
+/**
+ * --thread takes the permalink of the message being answered, or a bare ts.
+ *
+ * The permalink is the form to reach for: it carries the channel too, so the reply cannot
+ * land in the right thread id of the wrong conversation, and it is what Slack's "Copy link"
+ * and this tool's own logs both hand you. A bare ts is accepted for the case where that is
+ * all there is, and then the target argument is the only thing naming the channel.
+ */
+export function parseThreadArg(value) {
+  const parsed = parsePermalink(value);
+  if (parsed) return parsed;
+  if (/^\d{10}\.\d{6}$/.test(value)) return { channel: null, ts: value };
+  return null;
 }
 
 const isCli = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
@@ -62,13 +80,32 @@ if (isCli) {
     args.splice(capAt, 2);
   }
 
+  let thread = null;
+  const threadAt = args.indexOf("--thread");
+  if (threadAt !== -1) {
+    thread = parseThreadArg(args[threadAt + 1] ?? "");
+    if (!thread) {
+      console.error("--thread needs a message permalink or a ts like 1793942436.687339");
+      process.exit(1);
+    }
+    args.splice(threadAt, 2);
+  }
+
   const [to, ...rest] = args;
   let text = rest.join(" ");
   if (text === "-" || (!text && !process.stdin.isTTY)) text = fs.readFileSync(0, "utf8").trim();
   if (!to || !text) {
     console.error(
-      'usage: send.js [--cap N] <"#channel" | "@username" | ID> <message... | ->   (- reads stdin)',
+      'usage: send.js [--cap N] [--thread <permalink | ts>] <"#channel" | "@username" | ID> <message... | ->   (- reads stdin)',
     );
+    process.exit(1);
+  }
+
+  // The target stays required even with a permalink, so the allowlist still has a name to
+  // check and the channel is never inferred. When both name a channel they must agree:
+  // a ts pasted against the wrong conversation is exactly the send that cannot be undone.
+  if (thread?.channel && /^[CDG][A-Z0-9]+$/.test(to) && thread.channel !== to) {
+    console.error(`refused: --thread points at ${thread.channel}, but the target is ${to}`);
     process.exit(1);
   }
 
@@ -83,8 +120,9 @@ if (isCli) {
   // Name the transport: "as you" vs "via webhook" is the whole point of the routing,
   // and a silent switch either way is the thing worth catching.
   const via = resolveWebhook(config.slackWebhooks, to) ? "via webhook" : "as you";
-  sendSlackMessage(slack, to, text)
-    .then((channel) => console.log(`sent to ${to} (${channel}) ${via} — ${countChars(text)} chars`))
+  const where = thread ? ` in thread ${thread.ts}` : "";
+  sendSlackMessage(slack, to, text, { threadTs: thread?.ts })
+    .then((channel) => console.log(`sent to ${to} (${channel})${where} ${via} — ${countChars(text)} chars`))
     .catch((err) => {
       console.error(`failed: ${err.message}`);
       process.exit(1);

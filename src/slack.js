@@ -319,13 +319,16 @@ export function createSlackClient(token, webhooks = {}, { selfDm = true } = {}) 
     async replyInThread(channel, threadTs, text) {
       const hook = resolveWebhook(webhooks, channel);
       if (hook) return postWebhook(hook, text, threadTs);
-      await call(token, "chat.postMessage", {
+      // Return the channel Slack resolved, like post() does: send.js prints it, and with a
+      // "#name" target that id is the only confirmation of WHERE the reply actually landed.
+      const body = await call(token, "chat.postMessage", {
         channel,
         text,
         thread_ts: threadTs,
         unfurl_links: false,
         unfurl_media: false,
       });
+      return body.channel;
     },
 
     /** Messages in a conversation since oldestTs — used to catch a manual "stop" reply in the self-DM. */
