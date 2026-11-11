@@ -125,6 +125,10 @@ export function loadConfig() {
     // `ocr delegate` picks the PR's reviewable files and resolves a checklist per file; the
     // review itself still runs on REVIEW_MODEL. Off switch only — a missing `ocr` already
     // degrades to the plain diff review on its own (see src/ocr.js).
+    // Off switch for the code-request worker: the request is still classified and logged, but
+    // no worktree, worker or draft PR. For a machine where another runner (a scheduled agent)
+    // owns turning Slack asks into PRs, so the two never race on the same ask.
+    codeRequestsEnabled: env.CODE_REQUESTS_ENABLED !== "0" && env.CODE_REQUESTS_ENABLED !== "false",
     ocrEnabled: env.OCR_ENABLED !== "0" && env.OCR_ENABLED !== "false",
     ocrBin: env.OCR_BIN || "ocr",
     ocrRuleFile: env.OCR_RULE_FILE || path.join(BASE_DIR, "ocr", "rule.json"),

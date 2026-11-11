@@ -129,7 +129,9 @@ async function processMention(mention, repos, config, slack, selfId) {
 
   if (config.dryRun) return { classification, result: { status: "dry_run" } };
 
-  const handler = HANDLERS[classification.kind];
+  const codeOff = classification.kind === "code_request" && !config.codeRequestsEnabled;
+  if (codeOff) log(`code request left to another runner (CODE_REQUESTS_ENABLED=0): ${mentionKey(mention)}`);
+  const handler = codeOff ? undefined : HANDLERS[classification.kind];
   const result = handler
     ? await handler({ mention, classification, contextBlock, context, config, slack, selfId })
     : { status: "ignored" };
