@@ -128,6 +128,9 @@ export function loadConfig() {
     // Off switch for the code-request worker: the request is still classified and logged, but
     // no worktree, worker or draft PR. For a machine where another runner (a scheduled agent)
     // owns turning Slack asks into PRs, so the two never race on the same ask.
+    // Instant "để anh check" / "Let me check." in the thread of every ask (ACK_KINDS), so the
+    // asker hears back within one poll even when the real work runs later elsewhere.
+    ackReply: env.ACK_REPLY !== "0" && env.ACK_REPLY !== "false",
     codeRequestsEnabled: env.CODE_REQUESTS_ENABLED !== "0" && env.CODE_REQUESTS_ENABLED !== "false",
     ocrEnabled: env.OCR_ENABLED !== "0" && env.OCR_ENABLED !== "false",
     ocrBin: env.OCR_BIN || "ocr",

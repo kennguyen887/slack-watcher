@@ -9,6 +9,7 @@ import { classifyMention } from "./classify.js";
 import { PR_URL_RE } from "./github.js";
 import { HANDLERS } from "./handlers/index.js";
 import { findReviewFollowup, handlePrReviewFollowup } from "./handlers/pr-review.js";
+import { ACK_KINDS, ackText, threadTsOf } from "./handlers/shared.js";
 import { log, stamp } from "./log.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,7 +91,7 @@ function userAlreadyReplied(context, mention, selfId) {
   );
 }
 
-async function processMention(mention, repos, config, slack, selfId) {
+async function processMention(mention, repos, config, slack, selfId, { isRetry = false } = {}) {
   const context = await slack.fetchContext(mention, config.contextWindowSeconds);
   if (context.error) log(`context unavailable for ${mentionKey(mention)}: ${context.error}`);
 
@@ -128,6 +129,13 @@ async function processMention(mention, repos, config, slack, selfId) {
   );
 
   if (config.dryRun) return { classification, result: { status: "dry_run" } };
+
+  if (config.ackReply && !isRetry && ACK_KINDS.has(classification.kind) && mention.channel?.id) {
+    await slack
+      .replyInThread(mention.channel.id, threadTsOf(mention), ackText(mention.text))
+      .then(() => log(`acked ${mentionKey(mention)} in its thread`))
+      .catch((err) => log(`ERROR posting ack for ${mentionKey(mention)}: ${err.message}`));
+  }
 
   const codeOff = classification.kind === "code_request" && !config.codeRequestsEnabled;
   if (codeOff) log(`code request left to another runner (CODE_REQUESTS_ENABLED=0): ${mentionKey(mention)}`);
@@ -171,7 +179,9 @@ async function pollOnce(config, slack, selfId, query, state) {
   for (const mention of fresh) {
     const key = mentionKey(mention);
     try {
-      const { classification, result } = await processMention(mention, repos, config, slack, selfId);
+      const { classification, result } = await processMention(mention, repos, config, slack, selfId, {
+        isRetry: Boolean(state.pending[key]),
+      });
       appendHistory(config.historyFile, {
         key,
         channel: mention.channel?.name,

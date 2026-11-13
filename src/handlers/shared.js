@@ -36,6 +36,16 @@ export function vietnameseScore(text = "") {
   return words.size + Math.min(diacritics.size, 3);
 }
 
+/**
+ * Mention kinds that get an instant "on it" reply in their thread: the asks no handler answers
+ * in the thread within a minute (code asks go to another runner, clarifications and English
+ * questions only reach the user). PR reviews reply with their own result, so they get none.
+ */
+export const ACK_KINDS = new Set(["code_request", "needs_clarification", "question"]);
+
+/** The instant acknowledgement, in the asker's language. */
+export const ackText = (text = "") => (detectLang(text) === "vi" ? "để anh check" : "Let me check.");
+
 /** The gate for replying publicly in Vietnamese. English-speaking teammates never pass it. */
 export const isVietnamese = (text = "", threshold = 3) => vietnameseScore(text) >= threshold;
 
