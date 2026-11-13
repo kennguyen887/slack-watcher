@@ -74,7 +74,7 @@ export const ANSWER_TOOLS = [
  * (Slack gives this tool no delete), so anything short of a confident, in-voice answer stays in.
  * @returns {{ status: string, reply: string, reason: string, postable: boolean }}
  */
-export function answerOutcome(result, { maxChars = 600 } = {}) {
+export function answerOutcome(result, { maxChars = 499 } = {}) {
   const status = result.match(/^ANSWER_STATUS:\s*(\w+)/m)?.[1]?.toLowerCase() ?? null;
   const reason = result.match(/^ANSWER_REASON:\s*(.+)$/m)?.[1]?.trim() ?? "";
   const reply = (result.match(/SLACK_REPLY:\s*([\s\S]+)$/m)?.[1] ?? "").trim();
@@ -140,6 +140,8 @@ Write the reply as ONE Slack message in Vietnamese, matching the profile above:
 - Say the answer and nothing else. No greeting, no sign-off, no "hy vọng giúp được", no recap of
   their question, no offer to help further, no bullet list unless I would really use one.
 - Keep it to the length I actually write — a sentence or two. Long is wrong.
+- Under 500 characters. When the reply reports a finding, a cause or a next step, write it as short
+  lines "What: …", "Where: …", "Why: …", "Next: …" (only the lines that apply). A plain answer stays one line.
 - Keep technical terms in English exactly as the team says them (API, endpoint, branch, deploy, RC,
   prod, merge, PR, env, cron, migration…). Never translate them.
 - Plain text. No markdown headings, no bold, no numbered lists. A link is just the URL.

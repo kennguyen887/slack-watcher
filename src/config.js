@@ -147,7 +147,7 @@ export function loadConfig() {
     answerTimeoutMs: intOption(env.ANSWER_TIMEOUT_MINUTES, 10, { min: 1 }) * 60_000,
     // A chat answer that runs long is a sign the worker wrote an essay instead of a reply;
     // over the cap it becomes a private draft rather than a wall of text in the channel.
-    answerMaxChars: intOption(env.ANSWER_MAX_CHARS, 600, { min: 80, max: 3000 }),
+    answerMaxChars: intOption(env.ANSWER_MAX_CHARS, 499, { min: 80, max: 3000 }),
     // How many PRs from ONE multi-PR review message to review at once. The git worktree
     // setup is serialized regardless; this caps the concurrent claude review workers.
     reviewConcurrency: intOption(env.REVIEW_CONCURRENCY, 3, { min: 1, max: 6 }),
